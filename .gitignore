@@ -1,0 +1,37 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor / tooling artifacts
+.sonar/
+.idea/
+.vscode/
+*.bak
+
+# OS metadata
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Media artifacts (raw source video, intermediate caches, exported clips)
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.jpg
+*.png
+clips/
+
+# User-specific calibration and bowler-target artifacts
+# (these are venue/bowler-specific and not part of the tool itself)
+venue.json
+*.bowler.json
+clemons.json
+stills/
