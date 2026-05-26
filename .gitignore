@@ -13,6 +13,8 @@ venv/
 .sonar/
 .idea/
 .vscode/
+.claude/
+thoughts/
 *.bak
 
 # OS metadata
