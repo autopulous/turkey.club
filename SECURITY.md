@@ -12,7 +12,7 @@ Include:
 
 - A clear description of the vulnerability.
 - Steps to reproduce, ideally with a minimal example.
-- Affected version(s) — a git commit SHA if you're tracking `master`.
+- Affected version(s) — a git commit SHA if you're tracking `main`.
 - Any suggested mitigation.
 
 You can expect:
@@ -23,7 +23,7 @@ You can expect:
 
 ## Supported versions
 
-This project is pre-1.0; only the latest tagged release and `master` HEAD receive security patches. Older releases will not be back-patched.
+This project is pre-1.0; only the latest tagged release and `main` HEAD receive security patches. Older releases will not be back-patched.
 
 | Version | Supported          |
 |---------|--------------------|
