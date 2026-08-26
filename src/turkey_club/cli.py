@@ -61,9 +61,18 @@ def extract(
     ),
     calibration: Path = typer.Option(..., exists=True, help="Venue calibration JSON from `calibrate`."),
     out: Path = typer.Option(..., help="Output directory for per-shot clips."),
+    format: str | None = typer.Option(
+        None,
+        "--format",
+        help=(
+            "Bowling format preset. Bundles probe interval + lane policy + expected shot count. "
+            "Presets: pba-qualifying, doubles, scotch-doubles, league, baker, singles-practice, open-bowling. "
+            "Explicit --probe-interval and --bowler-lane still override the preset."
+        ),
+    ),
     strategy: str = typer.Option("probe", "--strategy", help="Search strategy: 'probe' (sparse probes + range-expand) or 'linear' (every-frame scan)."),
     bowler_lane: str | None = typer.Option(None, "--bowler-lane", help="Restrict search to a single calibrated lane (e.g. for Baker format). Default: search all calibrated lanes."),
-    probe_interval_seconds: float = typer.Option(10.0, "--probe-interval", help="Probe interval in seconds (probe strategy only). Must be < minimum on-approach duration of a shot."),
+    probe_interval_seconds: float | None = typer.Option(None, "--probe-interval", help="Probe interval in seconds (probe strategy only). Default: 10.0, or the format preset's value."),
     merge: bool = typer.Option(True, "--merge/--no-merge", help="After exporting per-shot clips, concatenate them into <out>/all_shots.mp4. Use --no-merge to skip."),
     merge_out: Path | None = typer.Option(None, "--merge-out", help="Override merged-video output path. Default: <out>/all_shots.mp4."),
     downscale_factor: float = typer.Option(0.5, "--downscale-factor", help="Detection-time downscale. Must be one of 1.0, 0.75, 0.5, 0.4, 0.33, 0.25; other values snap down to the closest supported and prompt for confirmation."),
@@ -72,8 +81,31 @@ def extract(
 ) -> None:
     """Detect and export every shot thrown by the named bowler."""
     from turkey_club.downscale import VALID_DOWNSCALE_FACTORS, snap_downscale_factor
+    from turkey_club.formats import PRESETS, FormatPreset
     from turkey_club.pipeline import extract_shots
     from turkey_club.source import resolve_source
+
+    preset: FormatPreset | None = None
+    if format is not None:
+        if format not in PRESETS:
+            typer.echo(
+                f"Unknown format {format!r}. Available: {', '.join(sorted(PRESETS))}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        preset = PRESETS[format]
+        try:
+            preset.validate_bowler_lane(bowler_lane)
+        except ValueError as error:
+            typer.echo(str(error), err=True)
+            raise typer.Exit(code=2)
+        typer.echo(f"Format: {preset.name} (lane_policy={preset.lane_policy})")
+
+    effective_probe_interval = (
+        probe_interval_seconds
+        if probe_interval_seconds is not None
+        else (preset.probe_interval_seconds if preset is not None else 10.0)
+    )
 
     try:
         snapped_factor = snap_downscale_factor(downscale_factor)
@@ -91,18 +123,23 @@ def extract(
     video_path = resolve_source(video, cache_dir=cache_dir)
     typer.echo(f"Using video: {video_path}")
 
-    extract_shots(
+    shot_count = extract_shots(
         video=video_path,
         bowler_target_path=bowler_target,
         calibration_path=calibration,
         out_dir=out,
         strategy=strategy,
         bowler_lane=bowler_lane,
-        probe_interval_seconds=probe_interval_seconds,
+        probe_interval_seconds=effective_probe_interval,
         merge=merge,
         merge_out=merge_out,
         downscale_factor=snapped_factor,
     )
+
+    if preset is not None and shot_count is not None:
+        warning = preset.check_shot_count(shot_count)
+        if warning:
+            typer.echo(f"Warning: {warning}", err=True)
 
 
 @app.command()

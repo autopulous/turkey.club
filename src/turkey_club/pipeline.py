@@ -53,8 +53,8 @@ def extract_shots(
     merge: bool = True,
     merge_out: Path | None = None,
     downscale_factor: float = 0.5,
-) -> None:
-    """Find and export every shot thrown by the named bowler.
+) -> int:
+    """Find and export every shot thrown by the named bowler. Returns the shot count.
 
     Detection runs against a pre-downscaled cache of ``video`` (auto-created if
     absent at ``<video.stem>.detect_<scale>x.mp4`` alongside the source). Clip
@@ -133,6 +133,8 @@ def extract_shots(
         merge_clips(out_dir, merged_path, pattern="shot_*.mp4")
     elif merge and len(shots) < 2:
         print(f"skipping merge: only {len(shots)} clip(s) produced (need >= 2)", flush=True)
+
+    return len(shots)
 
 
 def _extract_shots_linear(
