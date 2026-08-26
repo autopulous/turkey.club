@@ -8,3 +8,4 @@
 - [Tool roadmap and current state](project_tool_roadmap.md) — what's built, what's queued, where things stand.
 - [Pipeline invariants and bug-fix lessons](feedback_pipeline_invariants.md) — flush=True on long-running prints, mkdir-upfront on interactive collectors, strict-forward-progress in probe loops, tuple-coerce after JSON.
 - [GitHub credential switch](reference_gh_credential_switch.md) — `gh auth switch` between work (john-hart-vertexinc-com) and personal (autopulous) accounts for push.
+- [GitHub auto-switch for turkey.club](feedback_gh_auto_switch.md) — automatically switch to autopulous for GitHub operations, switch back to john-hart-vertexinc-com afterward.
