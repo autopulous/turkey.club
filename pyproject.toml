@@ -4,18 +4,35 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turkey-club"
-version = "0.1.0"
+version = "0.2.0"
 description = "Extract per-shot clips of a target bowler from a fixed-camera match video."
 requires-python = ">=3.10"
+license = "MIT"
+readme = "README.md"
+authors = [
+    { name = "John Hart" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+]
 dependencies = [
     "typer>=0.12",
     "opencv-python>=4.9",
     "numpy>=1.26",
-    "mediapipe>=0.10",
     "easyocr>=1.7",
     "ultralytics>=8.1",
     "yt-dlp>=2024.04.09",
 ]
+
+[project.urls]
+Homepage = "https://github.com/autopulous/turkey.club"
+Repository = "https://github.com/autopulous/turkey.club"
+Issues = "https://github.com/autopulous/turkey.club/issues"
 
 [project.optional-dependencies]
 dev = [

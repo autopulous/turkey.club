@@ -8,6 +8,7 @@ Two search strategies:
 from __future__ import annotations
 
 import dataclasses
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -38,6 +39,61 @@ class _LaneState:
     previous_bowler_centroid: tuple[float, float] | None = None
 
 
+class _ProgressTracker:
+    """Lightweight progress and ETA tracker for pipeline processing loops."""
+
+    def __init__(self, total_frames: int, fps: float, label: str = "progress") -> None:
+        self._total_frames = total_frames
+        self._fps = fps
+        self._label = label
+        self._start_time: float | None = None
+        self._frames_processed = 0
+        self._last_report_time = 0.0
+        self._report_interval = 5.0
+        self._estimate_printed = False
+
+    def start(self) -> None:
+        self._start_time = time.monotonic()
+
+    def update(self, frames_processed: int) -> None:
+        self._frames_processed = frames_processed
+        if self._start_time is None:
+            return
+        now = time.monotonic()
+        if now - self._last_report_time < self._report_interval:
+            return
+        self._last_report_time = now
+        elapsed = now - self._start_time
+        if 0 >= self._frames_processed:
+            return
+        per_frame = elapsed / self._frames_processed
+        remaining_frames = self._total_frames - self._frames_processed
+        eta_seconds = per_frame * remaining_frames
+        pct = self._frames_processed / self._total_frames * 100
+        if not self._estimate_printed:
+            total_estimate = per_frame * self._total_frames
+            print(
+                f"  Estimated runtime: ~{self._format_duration(total_estimate)} at current speed",
+                flush=True,
+            )
+            self._estimate_printed = True
+        print(
+            f"  {self._label}: {self._frames_processed}/{self._total_frames} "
+            f"({pct:.1f}%) — ETA {self._format_duration(eta_seconds)}",
+            flush=True,
+        )
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        if 60 > seconds:
+            return f"{seconds:.0f}s"
+        minutes = seconds / 60
+        if 60 > minutes:
+            return f"{minutes:.1f} minutes"
+        hours = minutes / 60
+        return f"{hours:.1f} hours"
+
+
 def extract_shots(
     video: Path,
     bowler_target_path: Path,
@@ -53,8 +109,8 @@ def extract_shots(
     merge: bool = True,
     merge_out: Path | None = None,
     downscale_factor: float = 0.5,
-) -> None:
-    """Find and export every shot thrown by the named bowler.
+) -> int:
+    """Find and export every shot thrown by the named bowler. Returns the shot count.
 
     Detection runs against a pre-downscaled cache of ``video`` (auto-created if
     absent at ``<video.stem>.detect_<scale>x.mp4`` alongside the source). Clip
@@ -80,7 +136,11 @@ def extract_shots(
 
     capture = cv2.VideoCapture(str(detection_video))
     if not capture.isOpened():
-        raise RuntimeError(f"Could not open detection video: {detection_video}")
+        raise RuntimeError(
+            f"Could not open detection video: {detection_video}\n"
+            f"Verify the file exists and is a valid video. If the downscaled cache is corrupted, "
+            f"delete it and re-run: delete {detection_video}"
+        )
     fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     print(
@@ -108,7 +168,9 @@ def extract_shots(
                 person_confidence_threshold, scaled_min_height,
             )
         else:
-            raise ValueError(f"Unknown strategy: {strategy!r}")
+            raise ValueError(
+                f"Unknown strategy: {strategy!r}. Valid strategies: 'probe' or 'linear'."
+            )
     finally:
         capture.release()
 
@@ -134,6 +196,8 @@ def extract_shots(
     elif merge and len(shots) < 2:
         print(f"skipping merge: only {len(shots)} clip(s) produced (need >= 2)", flush=True)
 
+    return len(shots)
+
 
 def _extract_shots_linear(
     capture: cv2.VideoCapture,
@@ -145,10 +209,11 @@ def _extract_shots_linear(
     person_confidence_threshold: float,
     person_min_height_pixels: int,
 ) -> list[ShotSegment]:
-    """Linear single-pass scan over the entire video — the oracle for validating ``probe``."""
+    """Linear single-pass scan over the entire video — the reference for validating ``probe``."""
     states = [_LaneState(name=lane.name, bowler_confidence=[], pose_motion=[], pin_motion=[], ball_reached_pins=[]) for lane in candidate_lanes]
     previous_frame = None
-    progress_every = max(1, total_frames // 50)
+    tracker = _ProgressTracker(total_frames, fps, label="linear")
+    tracker.start()
     capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     for frame_index in range(total_frames):
@@ -158,8 +223,7 @@ def _extract_shots_linear(
         persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels)
         _update_lane_signals(states, candidate_lanes, frame, previous_frame, persons, target)
         previous_frame = frame
-        if frame_index and frame_index % progress_every == 0:
-            print(f"  linear: {frame_index}/{total_frames} ({frame_index/total_frames*100:.1f}%)", flush=True)
+        tracker.update(frame_index + 1)
 
     return find_shot_boundaries(_states_to_signals(states), fps, params)
 
@@ -187,6 +251,8 @@ def _extract_shots_probe(
     probe_frame = 0
     probe_count = 0
     expand_count = 0
+    probe_start_time = time.monotonic()
+    last_eta_time = 0.0
 
     while probe_frame < total_frames:
         probe_count += 1
@@ -206,10 +272,26 @@ def _extract_shots_probe(
             if hit:
                 break
 
+        now = time.monotonic()
+        elapsed = now - probe_start_time
+        pct = probe_frame / total_frames
+        eta_str = ""
+        if 0 < pct and now - last_eta_time >= 5.0:
+            eta_seconds = elapsed / pct * (1 - pct)
+            eta_str = f" — ETA {_ProgressTracker._format_duration(eta_seconds)}"
+            if 1 == probe_count:
+                total_estimate = elapsed / pct
+                print(
+                    f"  Estimated runtime: ~{_ProgressTracker._format_duration(total_estimate)} "
+                    f"at current speed",
+                    flush=True,
+                )
+            last_eta_time = now
+
         if not hit:
             print(
                 f"  probe #{probe_count} @ frame {probe_frame} of {total_frames} "
-                f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): no hit",
+                f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): no hit{eta_str}",
                 flush=True,
             )
             probe_frame += probe_interval_frames
@@ -221,7 +303,7 @@ def _extract_shots_probe(
         print(
             f"  probe #{probe_count} @ frame {probe_frame} of {total_frames} "
             f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): HIT #{expand_count} — "
-            f"expanding [{window_start}-{window_end}]",
+            f"expanding [{window_start}-{window_end}]{eta_str}",
             flush=True,
         )
 
@@ -229,7 +311,6 @@ def _extract_shots_probe(
             capture, window_start, window_end, fps, target, candidate_lanes, params,
             person_confidence_threshold, person_min_height_pixels,
         )
-        # Dedup against any previously-found shot covering the same start frame
         new_shots = [
             shot for shot in window_shots
             if not any(existing.start_frame == shot.start_frame and existing.lane_name == shot.lane_name for existing in all_shots)
@@ -242,12 +323,16 @@ def _extract_shots_probe(
         )
 
         # Enforce strict forward progress: at least probe_interval past current probe_frame,
-        # AND past any newly-found shot's end. Without this, an end_frame at probe_frame - 1
-        # creates an infinite loop when the bowler is still in the approach zone.
+        # AND past any newly-found shot's end
         next_after_shot = window_shots[-1].end_frame + 1 if window_shots else probe_frame
         probe_frame = max(next_after_shot, probe_frame + probe_interval_frames)
 
-    print(f"  probes: {probe_count}, range-expansions: {expand_count}", flush=True)
+    total_elapsed = time.monotonic() - probe_start_time
+    print(
+        f"  probes: {probe_count}, range-expansions: {expand_count}, "
+        f"elapsed: {_ProgressTracker._format_duration(total_elapsed)}",
+        flush=True,
+    )
     all_shots.sort(key=lambda shot: shot.start_frame)
     return all_shots
 

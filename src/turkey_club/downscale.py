@@ -46,7 +46,13 @@ def ensure_downscaled_video(source: Path, scale_factor: float = 0.5) -> Path:
     if scale_factor >= 1.0:
         return source
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not on PATH.")
+        raise RuntimeError(
+            "ffmpeg is not on PATH. Install it and reopen your shell:\n"
+            "  Windows:  winget install Gyan.FFmpeg\n"
+            "  macOS:    brew install ffmpeg\n"
+            "  Linux:    sudo apt install ffmpeg  (or your distro's equivalent)\n"
+            "After installing, close and reopen your terminal so the new PATH takes effect."
+        )
 
     cache_path = downscaled_cache_path(source, scale_factor)
     if cache_path.exists():

@@ -49,7 +49,7 @@ Full documentation lives in [`docs/`](docs/), split into user-facing and project
 
 > Shot-count ranges assume a standard 10-frame game. A perfect game (all strikes) is **12 balls total** (10 frames + 2 bonus); a fully-open game (no strikes or spares except possibly the 10th) tops out at **~21 balls**. Per-bowler ranges are derived from how many of those balls each bowler throws in the format.
 
-A format preset `--format <preset>` option is planned to bundle these settings.
+Use `--format <preset>` to select a format. See the [Format preset reference](#format-preset-reference) table below for bundled defaults.
 
 ## Installation
 
@@ -61,12 +61,14 @@ Two-step process:
 Short version (after prerequisites are in place):
 
 ```
-git clone <repo-url>
+git clone https://github.com/autopulous/turkey.club
 cd turkey.club
-py -3 -m pip install -e .[dev]
+py -3 -m venv .venv && .venv\Scripts\activate   # Windows
+python3 -m venv .venv && source .venv/bin/activate  # macOS / Linux
+pip install -e .[dev]
 ```
 
-This exposes a `turkey-club` command and a `py -3 -m turkey_club.cli` fallback.
+This exposes a `turkey-club` command on your PATH while the virtual environment is active.
 
 ## Quick start
 
@@ -157,7 +159,7 @@ cp stills/samples/frame_0222.jpg stills/right.jpg
 ### 2. Calibrate the venue (one-time, per camera setup)
 
 ```
-py -3 -m turkey_club.cli calibrate \
+turkey-club calibrate \
     --frame stills/left.jpg \
     --frame stills/right.jpg \
     --out venue.json \
@@ -264,7 +266,7 @@ The saved file is just JSON — you can open it to verify, version-control it, o
 Before running the long `extract` pipeline on a 41-minute video, sanity-check that your zones actually align with the action:
 
 ```
-py -3 -m turkey_club.cli preview \
+turkey-club preview \
     --video match.mp4 \
     --calibration venue.json \
     --out overlay.mp4
@@ -280,7 +282,7 @@ If any zone is misplaced, re-run `calibrate` to redo it. Calibration is the fast
 Verify with overlay:
 
 ```
-py -3 -m turkey_club.cli preview \
+turkey-club preview \
     --video match.mp4 \
     --calibration venue.json \
     --out overlay.mp4
@@ -290,80 +292,55 @@ py -3 -m turkey_club.cli preview \
 
 A **bowler target** is a small JSON file containing the target bowler's display name plus a few thousand sampled pixel colors from their jersey's upper back. The pipeline uses these samples to identify the bowler across the match via HSV histogram-distance matching.
 
-Until a dedicated CLI subcommand lands (planned), the target is built with a short Python script. Below is a worked example for a bowler named **"Clemons"** with two reference stills (one per lane).
-
-#### Step 3a — Write the build script
-
-Save the following as `build_bowler_target.py` next to your video file. Adjust the **bowler name** and the **(image, lane_name) pairs** for your case:
-
-```python
-from pathlib import Path
-from turkey_club.config import VenueCalibration
-from turkey_club.identify import build_bowler_target_from_references
-
-# Project files live next to this script.
-base = Path(__file__).parent
-
-# Load the venue calibration from Step 2.
-venue = VenueCalibration.load(base / "venue.json")
-
-# One (image_path, lane_name) pair per reference still.
-# Lane names MUST match what you used in Step 2's `--lane` arguments.
-references = [
-    (base / "stills" / "left.jpg",  "left"),
-    (base / "stills" / "right.jpg", "right"),
-]
-
-target = build_bowler_target_from_references(
-    name="Clemons",                # Bowler's display name (used in OCR matching too)
-    references=references,
-    venue=venue,
-    samples_per_image=2000,        # ~2000 pixels per reference is a good baseline
-)
-
-out_path = base / "clemons.json"
-target.save(out_path)
-print(f"Saved {target.name!r} target with {len(target.shirt_color_samples)} samples -> {out_path}")
-```
-
-#### Step 3b — Run the script
+Below is a worked example for a bowler named **"Clemons"** with two reference stills (one per lane):
 
 ```
-py -3 build_bowler_target.py
+turkey-club build-bowler-target \
+    --name Clemons \
+    --calibration venue.json \
+    --reference stills/left.jpg --lane left \
+    --reference stills/right.jpg --lane right \
+    --out clemons.json
 ```
 
 Expected output:
 
 ```
-Saved 'Clemons' target with 4000 samples -> .../clemons.json
+Saved 'Clemons' target with 4000 samples -> clemons.json
 ```
 
 (2,000 samples × 2 reference images = 4,000 total. First run also downloads YOLOv8n weights ~6 MB if not already cached.)
+
+**Pairing convention:** Pass one `--reference` per `--lane`, paired by order. Or pass a single `--reference` to broadcast it to every `--lane` (useful when the bowler appears on every lane in the same still).
 
 #### What's happening internally
 
 1. Each reference image is loaded.
 2. **YOLOv8** detects all persons in the image.
-3. For each reference, the function picks the **single person whose foot position is inside the named lane's approach polygon** — that's your target bowler in that frame.
-4. It crops the **upper-back region** of that person's bounding box (the vertical band ~18 % to ~55 % of bbox height, where the jersey name sits).
+3. For each reference, the tool picks the **single person whose foot position is inside the named lane's approach polygon** — that's your target bowler in that frame.
+4. It crops the **upper-back region** of that person's bounding box (the vertical band ~18% to ~55% of bbox height, where the jersey name sits).
 5. **2,000 random pixels** are sampled from the crop.
 6. Samples from all reference images are concatenated and saved as the `shirt_color_samples` list in the output JSON.
 
 #### Variations
 
-- **Single-lane format (Baker / singles)** — pass one tuple:
-  ```python
-  references = [(base / "stills" / "left.jpg", "left")]
+- **Single-lane format (Baker / singles):**
   ```
-- **More reference frames per lane** (for lighting variation) — add more tuples:
-  ```python
-  references = [
-      (base / "stills" / "left_early.jpg", "left"),
-      (base / "stills" / "left_late.jpg",  "left"),
-      (base / "stills" / "right.jpg",      "right"),
-  ]
+  turkey-club build-bowler-target \
+      --name Clemons --calibration venue.json \
+      --reference stills/left.jpg --lane left \
+      --out clemons.json
   ```
-- **More samples per image** — increase `samples_per_image=4000` (or `8000`) if you want a richer histogram. Diminishing returns above ~4000 per image.
+- **More reference frames per lane** (for lighting variation):
+  ```
+  turkey-club build-bowler-target \
+      --name Clemons --calibration venue.json \
+      --reference stills/left_early.jpg --lane left \
+      --reference stills/left_late.jpg --lane left \
+      --reference stills/right.jpg --lane right \
+      --out clemons.json
+  ```
+- **More samples per image** — `--samples-per-image 4000` (or `8000`) for a richer histogram. Diminishing returns above ~4000 per image.
 
 #### Verifying the result
 
@@ -376,39 +353,56 @@ Open `clemons.json` in a text editor — you should see:
     [42, 38, 35],
     [51, 45, 41],
     ...
-  ]
+  ],
+  "version": 1
 }
 ```
 
-The list should contain roughly `samples_per_image × len(references)` entries (3-tuples of BGR values in 0-255). The `name` should match what you passed.
+The list should contain roughly `samples_per_image x len(references)` entries (3-tuples of BGR values in 0-255). The `name` should match what you passed.
+
+#### Optional: diagnose identification quality
+
+After building the target, use `diagnose` to verify the pipeline can identify the bowler consistently:
+
+```
+turkey-club diagnose \
+    --video match.mp4 \
+    --bowler-target clemons.json \
+    --calibration venue.json \
+    --frames 20
+```
+
+This samples 20 evenly-spaced frames and reports per-person confidence scores by lane. Scores >= 0.30 are matches. If scores are consistently below 0.30 or borderline (0.25-0.35), rebuild the target with more or better reference images.
 
 #### Troubleshooting
 
-- **`No person detected with foot in lane 'left' approach zone for stills/left.jpg`** — the reference frame doesn't have a detected person whose foot lands inside the calibrated left-approach polygon. Either: (a) pick a different reference frame where the bowler is clearly in approach, or (b) verify your calibration with `preview` and re-do Step 2 if a zone is misplaced.
+- **`No person detected with foot in lane 'left' approach zone for stills/left.jpg`** — the reference frame doesn't have a detected person whose foot lands inside the calibrated left-approach polygon. Either: [a] pick a different reference frame where the bowler is clearly in approach, or [b] verify your calibration with `preview` and re-do Step 2 if a zone is misplaced.
 - **`Could not read reference image`** — the image path is wrong (typo, wrong working directory) or the file is corrupted.
-- **`KeyError: 'left'` from `venue.lane()`** — the lane name passed (e.g., `"left"`) doesn't match the names used during Step 2's calibration. Check the `lanes[].name` values in `venue.json`.
+- **Lane name mismatch** — the lane name passed doesn't match the names used during Step 2's calibration. Check the `lanes[].name` values in `venue.json`.
 
 ### 4. Extract shots
 
 ```
-py -3 -m turkey_club.cli extract \
+turkey-club extract \
     --video match.mp4 \
     --bowler-target clemons.json \
     --calibration venue.json \
+    --format pba-qualifying \
     --out clips/
 ```
 
 This produces:
-- `clips/shot_01_left.mp4`, `clips/shot_02_right.mp4`, …
+- `clips/shot_01_left.mp4`, `clips/shot_02_right.mp4`, ...
 - `clips/all_shots.mp4` — merged highlight reel (default; use `--no-merge` to skip)
 
 Options worth knowing:
 
 | Option | Default | Notes |
 |---|---|---|
-| `--strategy probe` | `probe` | `probe` is fast; `linear` is exhaustive (oracle). |
-| `--probe-interval 10` | `10.0` | Seconds between probes. Must be < min shot on-approach duration. |
-| `--bowler-lane left` | (unset → all) | Restrict to one lane (Baker format). |
+| `--format pba-qualifying` | (unset) | Bowling format preset — bundles probe interval, lane policy, and expected shot count. See [format preset reference](#format-preset-reference). |
+| `--strategy probe` | `probe` | `probe` is fast; `linear` is exhaustive (reference). |
+| `--probe-interval 10` | `10.0` | Seconds between probes. Overrides the preset value when set explicitly. |
+| `--bowler-lane left` | (unset → all) | Restrict to one lane (required for Baker formats). |
 | `--downscale-factor 0.5` | `0.5` | Detection-time downscale. Snap-down to {1.0, 0.75, 0.5, 0.4, 0.33, 0.25}. |
 | `--no-merge` | (merge on) | Skip the highlight-reel concatenation step. |
 
@@ -417,8 +411,8 @@ Options worth knowing:
 `--video` accepts any yt-dlp-supported URL:
 
 ```
-py -3 -m turkey_club.cli extract \
-    --video "https://youtube.com/watch?v=…" \
+turkey-club extract \
+    --video "https://youtube.com/watch?v=..." \
     --bowler-target clemons.json --calibration venue.json --out clips/
 ```
 
@@ -499,11 +493,36 @@ Remove-Item "$env:USERPROFILE\.cache\turkey-club\videos\aZ1QRX9Hkqw.mp4"
 
 The detection-resolution downscale (`*.detect_<scale>x.mp4`) is the most painful to regenerate — keep it around if you plan to re-process the same match.
 
+## Format preset reference
+
+Each `--format` preset bundles a probe interval, lane policy, and expected shot range. Individual flags (`--probe-interval`, `--bowler-lane`) override preset values.
+
+| Preset | Probe interval | Lane policy | Expected shots | Notes |
+|---|---|---|---|---|
+| `pba-qualifying` | 10.0s | cross-lane | 12-21 | Default for PBA qualifying blocks |
+| `pba-match-play` | 10.0s | cross-lane | 12-21 | PBA match play rounds |
+| `doubles` | 10.0s | cross-lane | 5-11 | Each bowler alternates lanes per frame |
+| `scotch-doubles` | 10.0s | cross-lane | 5-11 | Bowlers alternate shots, team alternates lanes |
+| `baker` | 10.0s | single-lane | 2-6 | Requires `--bowler-lane`; 5-bowler team |
+| `baker-half` | 10.0s | single-lane | 3-11 | Requires `--bowler-lane`; 2-3 bowler team |
+| `baker-double` | 10.0s | single-lane | 1-3 | Requires `--bowler-lane`; 5-bowler double game |
+| `league` | 10.0s | cross-lane | 12-21 | Standard league play |
+| `singles-practice` | 10.0s | single-lane | 12-21 | Solo practice session |
+| `multi-bowler-practice` | 10.0s | cross-lane | 1-42 | Mixed group practice |
+| `open` | 10.0s | cross-lane | 12-21 | Open / casual bowling |
+
 ## Status
 
-- Phases 1–7 of the pipeline (calibrate, identify, segment, extract, export, merge) are implemented and validated on PBA qualifying footage.
-- Probe-then-range search and the downscale cache are live optimizations.
-- Format presets and a `build-bowler` CLI subcommand are planned. See [implementation_plan.md](docs/project/implementation_plan.md) for the full backlog.
+v0.2.0 — the full pipeline is implemented and validated on PBA qualifying footage:
+- **Calibrate, identify, segment, extract, export, merge** — all pipeline phases working.
+- **Probe-then-range search** and **downscale cache** — live optimizations.
+- **Format presets** (`--format`) — 11 bowling formats with bundled defaults.
+- **`build-bowler-target` subcommand** — replaces the manual Python script for building bowler targets.
+- **`diagnose` subcommand** — confidence score reporting for identification tuning.
+- **Progress reporting with ETA** — inline progress and time estimates during extraction.
+- **Schema versioning** — VenueCalibration and BowlerTarget JSON artifacts carry a version field for forward compatibility.
+
+See [implementation_plan.md](docs/project/implementation_plan.md) for design details.
 
 ## License
 

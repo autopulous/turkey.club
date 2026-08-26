@@ -211,35 +211,36 @@ Uncovered: FR-7, FR-8, FR-9, FR-10, FR-11 (all Won't/later — excluded by desig
 **Implements requirements:** OR-1
 **Depends on:** WU-9, WU-1, WU-2, WU-3, WU-4, WU-5, WU-6, WU-7, WU-8
 **Definition of done:**
-- Package is published on PyPI under the name `turkey-club`
-- `pip install turkey-club` in a fresh virtual environment on each platform succeeds
-- Published package version matches `pyproject.toml` and `src/turkey_club/__init__.py`
-- A repeatable publication mechanism exists (manual `twine upload` or CI workflow — per AD-4)
+- [x] Draft: package builds cleanly (`py -3 -m build` produces `dist/turkey_club-0.2.0-py3-none-any.whl` and `dist/turkey_club-0.2.0.tar.gz`)
+- [ ] Pending: package is published on PyPI under the name `turkey-club`
+- [ ] Pending: `pip install turkey-club` in a fresh virtual environment on each platform succeeds
+- [x] Draft: published package version matches `pyproject.toml` and `src/turkey_club/__init__.py` (both 0.2.0)
+- [x] Draft: a repeatable publication mechanism exists (manual `twine upload` — per AD-4)
 
 #### WU-11: CLI help text polish
 **Statement:** Every subcommand's `--help` output is self-documenting, with all options described and special values enumerated, using consistent terminology.
 **Implements requirements:** UX-1
 **Depends on:** WU-2, WU-3, WU-4
 **Definition of done:**
-- `turkey-club --help` lists all subcommands with one-line descriptions
-- `turkey-club extract --help` lists all available `--format` preset names
-- `turkey-club build-bowler-target --help` documents the `--reference`/`--lane` pairing convention
-- `turkey-club diagnose --help` documents output interpretation and confidence scores
-- Consistent terminology across all subcommands
-- CLI test verifies all subcommands appear in top-level `--help`
+- [x] `turkey-club --help` lists all subcommands with one-line descriptions
+- [x] `turkey-club extract --help` lists all available `--format` preset names
+- [x] `turkey-club build-bowler-target --help` documents the `--reference`/`--lane` pairing convention
+- [x] `turkey-club diagnose --help` documents output interpretation and confidence scores
+- [x] Consistent terminology across all subcommands
+- [x] CLI test verifies all subcommands appear in top-level `--help`
 
 #### WU-12: Documentation update
 **Statement:** User documentation is updated with explicit dependency isolation guidance, a format preset reference, a start-to-finish tutorial using all new subcommands, and all stale references corrected.
 **Implements requirements:** FR-5
 **Depends on:** WU-1, WU-2, WU-3, WU-4, WU-5
 **Definition of done:**
-- `docs/user/installation.md` updated with explicit venv/virtualenv instructions per platform (Windows, macOS, Linux) as the default installation path
-- `docs/user/installation.md` removes `mediapipe` from the dependency table
-- A format preset reference table documents each `--format` preset's bundled defaults
-- Start-to-finish tutorial walks a new user from "I have a bowling video" to "I have per-shot clips," using `build-bowler-target` instead of the manual Python script
-- Existing documentation references to planned/unimplemented features updated to reflect v0 state
-- `<repo-url>` placeholders replaced with `https://github.com/autopulous/turkey.club`
-- README updated: format presets and `build-bowler-target` moved from "planned" to "implemented," `build-bowler-target` tutorial replaces the Python script section
+- [x] `docs/user/installation.md` updated with explicit venv/virtualenv instructions per platform (Windows, macOS, Linux) as the default installation path
+- [x] `docs/user/installation.md` removes `mediapipe` from the dependency table
+- [x] A format preset reference table documents each `--format` preset's bundled defaults
+- [x] Start-to-finish tutorial walks a new user from "I have a bowling video" to "I have per-shot clips," using `build-bowler-target` instead of the manual Python script
+- [x] Existing documentation references to planned/unimplemented features updated to reflect v0 state
+- [x] `<repo-url>` placeholders replaced with `https://github.com/autopulous/turkey.club`
+- [x] README updated: format presets and `build-bowler-target` moved from "planned" to "implemented," `build-bowler-target` tutorial replaces the Python script section
 
 ## Dependency graph
 

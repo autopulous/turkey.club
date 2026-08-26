@@ -41,7 +41,13 @@ def export_clip(video: Path, segment: ShotSegment, fps: float, out_path: Path) -
     keyframe-aligned seeking but frame-accurate.
     """
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not on PATH. Install (e.g. `winget install Gyan.FFmpeg`) and re-open the shell.")
+        raise RuntimeError(
+            "ffmpeg is not on PATH. Install it and reopen your shell:\n"
+            "  Windows:  winget install Gyan.FFmpeg\n"
+            "  macOS:    brew install ffmpeg\n"
+            "  Linux:    sudo apt install ffmpeg  (or your distro's equivalent)\n"
+            "After installing, close and reopen your terminal so the new PATH takes effect."
+        )
 
     start_seconds = segment.start_frame / fps
     duration_seconds = (segment.end_frame - segment.start_frame) / fps

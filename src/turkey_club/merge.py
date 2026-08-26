@@ -22,11 +22,21 @@ def merge_clips(
     codec parameters and concat fails.
     """
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not on PATH.")
+        raise RuntimeError(
+            "ffmpeg is not on PATH. Install it and reopen your shell:\n"
+            "  Windows:  winget install Gyan.FFmpeg\n"
+            "  macOS:    brew install ffmpeg\n"
+            "  Linux:    sudo apt install ffmpeg  (or your distro's equivalent)\n"
+            "After installing, close and reopen your terminal so the new PATH takes effect."
+        )
 
     clips = sorted(clips_dir.glob(pattern))
     if not clips:
-        raise RuntimeError(f"No clips matching {pattern!r} found in {clips_dir}.")
+        raise RuntimeError(
+            f"No clips matching {pattern!r} found in {clips_dir}.\n"
+            f"Run 'turkey-club extract' first to generate per-shot clips, "
+            f"then merge them with this command."
+        )
 
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as handle:
         list_path = Path(handle.name)

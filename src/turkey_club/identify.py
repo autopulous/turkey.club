@@ -158,13 +158,24 @@ def build_bowler_target_from_references(
     for image_path, lane_name in references:
         img = cv2.imread(str(image_path))
         if img is None:
-            raise FileNotFoundError(f"Could not read reference image: {image_path}")
+            raise FileNotFoundError(
+                f"Could not read reference image: {image_path}\n"
+                f"Verify the file exists and is a valid image (JPEG, PNG)."
+            )
         approach = venue.lane(lane_name).approach_zone
         persons = detect_persons(img, confidence_threshold=0.4, min_height_pixels=80)
         bowler = next((b for b in persons if bbox_foot_in_polygon(b, approach)), None)
         if bowler is None:
             raise RuntimeError(
-                f"No person detected with foot in lane {lane_name!r} approach zone for {image_path}"
+                f"No person detected with foot in lane {lane_name!r} approach zone "
+                f"for {image_path}.\n"
+                f"Diagnostic steps:\n"
+                f"  1. Verify the bowler is clearly visible in the reference frame\n"
+                f"  2. Verify calibration zones align: "
+                f"turkey-club preview --video <video> --calibration <cal.json> --out overlay.mp4\n"
+                f"  3. Try a different reference frame where the bowler is standing in the approach area\n"
+                f"YOLO detected {len(persons)} person(s) in the image, but none had their foot "
+                f"position inside the {lane_name!r} approach polygon."
             )
         crop = _crop_upper_back(img, bowler)
         if crop.size == 0:

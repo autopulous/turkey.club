@@ -26,8 +26,9 @@ def resolve_source(src: str, cache_dir: Path | None = None) -> Path:
     yt_dlp = shutil.which("yt-dlp")
     if yt_dlp is None:
         raise RuntimeError(
-            "yt-dlp not found on PATH. Install with `py -3 -m pip install yt-dlp`, "
-            "or pass an existing local file path."
+            "yt-dlp is not on PATH. It is needed to download videos from URLs.\n"
+            "Install with: pip install yt-dlp\n"
+            "If you already have the video locally, pass the local file path instead of a URL."
         )
 
     output_template = str(cache / "%(id)s.%(ext)s")
