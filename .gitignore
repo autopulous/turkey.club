@@ -14,7 +14,7 @@ venv/
 .idea/
 .vscode/
 .claude/
-thoughts/
+thoughts/shared/handoffs/
 *.bak
 
 # OS metadata
