@@ -136,6 +136,50 @@ def fetch(
     typer.echo(str(resolve_source(source, cache_dir=cache_dir)))
 
 
+@app.command("build-bowler")
+def build_bowler(
+    name: str = typer.Option(..., "--name", help="Bowler's jersey name (used for OCR matching during extraction)."),
+    calibration: Path = typer.Option(..., exists=True, help="Venue calibration JSON from `calibrate`."),
+    reference: list[str] = typer.Option(
+        ...,
+        "--reference",
+        help="Reference image paired with a lane: <image_path>=<lane_name>. Pass once per reference.",
+    ),
+    out: Path = typer.Option(..., help="Output path for the BowlerTarget JSON."),
+    samples_per_image: int = typer.Option(200, "--samples-per-image", help="Random shirt-color pixel samples to draw from each reference image."),
+    seed: int = typer.Option(0, "--seed", help="RNG seed for reproducible color sampling."),
+) -> None:
+    """Build a BowlerTarget JSON by sampling shirt colors from reference images."""
+    from turkey_club.config import VenueCalibration
+    from turkey_club.identify import build_bowler_target_from_references
+
+    refs: list[tuple[Path, str]] = []
+    for entry in reference:
+        if "=" not in entry:
+            typer.echo(
+                f"Invalid --reference {entry!r}: expected <image_path>=<lane_name>",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        img_str, lane_name = entry.rsplit("=", 1)
+        img_path = Path(img_str)
+        if not img_path.exists():
+            typer.echo(f"Reference image not found: {img_path}", err=True)
+            raise typer.Exit(code=2)
+        refs.append((img_path, lane_name))
+
+    venue = VenueCalibration.load(calibration)
+    target = build_bowler_target_from_references(
+        name=name,
+        references=refs,
+        venue=venue,
+        samples_per_image=samples_per_image,
+        rng_seed=seed,
+    )
+    target.save(out)
+    typer.echo(f"BowlerTarget saved to {out} ({len(target.shirt_color_samples)} color samples)")
+
+
 @app.command()
 def merge(
     clips_dir: Path = typer.Option(..., "--clips-dir", exists=True, help="Directory containing the per-shot clip files."),

@@ -10,6 +10,7 @@ from turkey_club.source import resolve_source
 def test_cli_help_loads() -> None:
     result = CliRunner().invoke(app, ["--help"])
     assert result.exit_code == 0
+    assert "build-bowler" in result.stdout
     assert "calibrate" in result.stdout
     assert "extract" in result.stdout
     assert "preview" in result.stdout
