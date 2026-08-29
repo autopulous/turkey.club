@@ -1,7 +1,7 @@
 """Tests for detection utilities."""
 import numpy as np
 
-from turkey_club.detect import frame_has_motion
+from turkey_club.detect import detect_device, frame_has_motion
 
 
 def test_frame_has_motion_first_frame() -> None:
@@ -24,3 +24,16 @@ def test_frame_has_motion_below_threshold() -> None:
     frame_a = np.full((100, 100, 3), 100, dtype=np.uint8)
     frame_b = np.full((100, 100, 3), 101, dtype=np.uint8)
     assert frame_has_motion(frame_b, frame_a, threshold=3.0) is False
+
+
+def test_detect_device_explicit_cpu() -> None:
+    assert detect_device("cpu") == "cpu"
+
+
+def test_detect_device_explicit_cuda() -> None:
+    assert detect_device("cuda") == "cuda"
+
+
+def test_detect_device_auto_resolves() -> None:
+    result = detect_device("auto")
+    assert result in ("cpu", "cuda")

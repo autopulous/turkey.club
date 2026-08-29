@@ -79,6 +79,7 @@ def extract(
     frame_skip: int = typer.Option(1, "--frame-skip", help="Process every Nth frame during scan windows. Higher values reduce YOLO inference calls proportionally. 1 = every frame (default), 2 = every other, 3 = every third."),
     motion_gate: bool = typer.Option(False, "--motion-gate/--no-motion-gate", help="Skip YOLO inference on frames with no global motion (background subtraction gate). Reduces CPU in dead-time regions."),
     motion_gate_threshold: float = typer.Option(3.0, "--motion-gate-threshold", help="Mean pixel-difference threshold for the motion gate. Lower = more sensitive (fewer skips)."),
+    device: str = typer.Option("auto", "--device", help="Detection device: 'auto' (use CUDA if available), 'cpu', or 'cuda'."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-confirm any adjustment prompts (required for non-interactive runs)."),
     cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
 ) -> None:
@@ -145,6 +146,7 @@ def extract(
         frame_skip=frame_skip,
         motion_gate=motion_gate,
         motion_gate_threshold=motion_gate_threshold,
+        device=device,
     )
 
     if preset is not None and shot_count is not None:

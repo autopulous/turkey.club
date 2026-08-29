@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from turkey_club.config import BowlerTarget, LaneCalibration, SegmentationParameters, VenueCalibration
-from turkey_club.detect import bbox_foot_in_polygon, detect_persons, frame_has_motion, pin_zone_motion
+from turkey_club.detect import bbox_foot_in_polygon, detect_device, detect_persons, frame_has_motion, pin_zone_motion
 from turkey_club.downscale import ensure_downscaled_video
 from turkey_club.export import export_clip
 from turkey_club.identify import identify_bowler_in_frame
@@ -57,6 +57,7 @@ def extract_shots(
     frame_skip: int = 1,
     motion_gate: bool = False,
     motion_gate_threshold: float = 3.0,
+    device: str = "auto",
 ) -> int:
     """Find and export every shot thrown by the named bowler. Returns the shot count.
 
@@ -76,6 +77,9 @@ def extract_shots(
         pose_motion_threshold_pixels=SegmentationParameters().pose_motion_threshold_pixels * downscale_factor,
     )
     scaled_min_height = max(20, int(person_min_height_pixels * downscale_factor))
+
+    resolved_device = detect_device(device)
+    print(f"device={resolved_device} (requested={device})", flush=True)
 
     if bowler_lane is not None:
         candidate_lanes = [next(lane for lane in scaled_lanes if lane.name == bowler_lane)]
@@ -110,14 +114,14 @@ def extract_shots(
             shots = _extract_shots_linear(
                 capture, total_frames, fps, target, candidate_lanes, scaled_params,
                 person_confidence_threshold, scaled_min_height, frame_skip,
-                motion_gate, motion_gate_threshold,
+                motion_gate, motion_gate_threshold, resolved_device,
             )
         elif strategy == "probe":
             shots = _extract_shots_probe(
                 capture, total_frames, fps, target, candidate_lanes, scaled_params,
                 probe_interval_seconds, expand_seconds_before, expand_seconds_after,
                 person_confidence_threshold, scaled_min_height, frame_skip,
-                motion_gate, motion_gate_threshold,
+                motion_gate, motion_gate_threshold, resolved_device,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy!r}")
@@ -161,6 +165,7 @@ def _extract_shots_linear(
     frame_skip: int = 1,
     motion_gate: bool = False,
     motion_gate_threshold: float = 3.0,
+    device: str = "cpu",
 ) -> list[ShotSegment]:
     """Linear single-pass scan over the entire video — the oracle for validating ``probe``."""
     states = [_LaneState(name=lane.name, bowler_confidence=[], pose_motion=[], pin_motion=[], ball_reached_pins=[]) for lane in candidate_lanes]
@@ -180,7 +185,7 @@ def _extract_shots_linear(
             previous_frame = frame
             gated_count += 1
             continue
-        persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels)
+        persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels, device=device)
         _update_lane_signals(states, candidate_lanes, frame, previous_frame, persons, target)
         previous_frame = frame
         if frame_index and frame_index % progress_every == 0:
@@ -207,6 +212,7 @@ def _extract_shots_probe(
     frame_skip: int = 1,
     motion_gate: bool = False,
     motion_gate_threshold: float = 3.0,
+    device: str = "cpu",
 ) -> list[ShotSegment]:
     """Sparse probing at ``probe_interval_seconds`` then range-expand on hits."""
     probe_interval_frames = max(1, int(probe_interval_seconds * fps))
@@ -225,7 +231,7 @@ def _extract_shots_probe(
         ok, frame = capture.read()
         if not ok:
             break
-        persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels)
+        persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels, device=device)
         hit = False
         for lane in candidate_lanes:
             for person in persons:
@@ -259,7 +265,7 @@ def _extract_shots_probe(
         window_shots = _scan_window(
             capture, window_start, window_end, fps, target, candidate_lanes, params,
             person_confidence_threshold, person_min_height_pixels, frame_skip,
-            motion_gate, motion_gate_threshold,
+            motion_gate, motion_gate_threshold, device,
         )
         # Dedup against any previously-found shot covering the same start frame
         new_shots = [
@@ -297,6 +303,7 @@ def _scan_window(
     frame_skip: int = 1,
     motion_gate: bool = False,
     motion_gate_threshold: float = 3.0,
+    device: str = "cpu",
 ) -> list[ShotSegment]:
     """Process a contiguous frame range, returning shots with VIDEO-ABSOLUTE frame indices."""
     states = [_LaneState(name=lane.name, bowler_confidence=[], pose_motion=[], pin_motion=[], ball_reached_pins=[]) for lane in candidate_lanes]
@@ -314,7 +321,7 @@ def _scan_window(
             _append_zero_signals(states, candidate_lanes, frame, previous_frame)
             previous_frame = frame
             continue
-        persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels)
+        persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels, device=device)
         _update_lane_signals(states, candidate_lanes, frame, previous_frame, persons, target)
         previous_frame = frame
 

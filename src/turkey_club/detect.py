@@ -17,6 +17,17 @@ PersonBBox = tuple[int, int, int, int]
 DEFAULT_PERSON_MODEL = "yolov8n.pt"
 
 
+def detect_device(requested: str = "auto") -> str:
+    """Resolve the detection device: 'cpu', 'cuda', or 'auto' (pick CUDA if available)."""
+    if requested == "auto":
+        try:
+            import torch
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            return "cpu"
+    return requested
+
+
 @lru_cache(maxsize=2)
 def _load_person_model(model_name: str) -> "YOLO":
     from ultralytics import YOLO
@@ -50,6 +61,7 @@ def detect_persons(
     confidence_threshold: float = 0.5,
     min_height_pixels: int = 80,
     model_name: str = DEFAULT_PERSON_MODEL,
+    device: str = "cpu",
 ) -> list[PersonBBox]:
     """Return person bounding boxes (x1, y1, x2, y2) detected in ``frame``.
 
@@ -58,7 +70,7 @@ def detect_persons(
     spectators from polluting the bowler-identification step.
     """
     model = _load_person_model(model_name)
-    results = model(frame, classes=[0], conf=confidence_threshold, verbose=False)
+    results = model(frame, classes=[0], conf=confidence_threshold, verbose=False, device=device)
     if not results:
         return []
     boxes_tensor = results[0].boxes.xyxy
