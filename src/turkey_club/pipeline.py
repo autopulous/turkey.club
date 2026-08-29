@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from turkey_club.config import BowlerTarget, LaneCalibration, SegmentationParameters, VenueCalibration
-from turkey_club.detect import bbox_foot_in_polygon, detect_persons, pin_zone_motion
+from turkey_club.detect import bbox_foot_in_polygon, detect_persons, frame_has_motion, pin_zone_motion
 from turkey_club.downscale import ensure_downscaled_video
 from turkey_club.export import export_clip
 from turkey_club.identify import identify_bowler_in_frame
@@ -55,6 +55,8 @@ def extract_shots(
     merge_out: Path | None = None,
     downscale_factor: float = 0.5,
     frame_skip: int = 1,
+    motion_gate: bool = False,
+    motion_gate_threshold: float = 3.0,
 ) -> int:
     """Find and export every shot thrown by the named bowler. Returns the shot count.
 
@@ -99,7 +101,7 @@ def extract_shots(
         f"target={target.name!r} samples={len(target.shirt_color_samples)}, "
         f"strategy={strategy}, lanes={[lane.name for lane in candidate_lanes]}, "
         f"scaled_min_height={scaled_min_height}px, scaled_pose_threshold={scaled_params.pose_motion_threshold_pixels:.2f}px, "
-        f"frame_skip={frame_skip}",
+        f"frame_skip={frame_skip}, motion_gate={motion_gate}",
         flush=True,
     )
 
@@ -108,12 +110,14 @@ def extract_shots(
             shots = _extract_shots_linear(
                 capture, total_frames, fps, target, candidate_lanes, scaled_params,
                 person_confidence_threshold, scaled_min_height, frame_skip,
+                motion_gate, motion_gate_threshold,
             )
         elif strategy == "probe":
             shots = _extract_shots_probe(
                 capture, total_frames, fps, target, candidate_lanes, scaled_params,
                 probe_interval_seconds, expand_seconds_before, expand_seconds_after,
                 person_confidence_threshold, scaled_min_height, frame_skip,
+                motion_gate, motion_gate_threshold,
             )
         else:
             raise ValueError(f"Unknown strategy: {strategy!r}")
@@ -155,10 +159,13 @@ def _extract_shots_linear(
     person_confidence_threshold: float,
     person_min_height_pixels: int,
     frame_skip: int = 1,
+    motion_gate: bool = False,
+    motion_gate_threshold: float = 3.0,
 ) -> list[ShotSegment]:
     """Linear single-pass scan over the entire video — the oracle for validating ``probe``."""
     states = [_LaneState(name=lane.name, bowler_confidence=[], pose_motion=[], pin_motion=[], ball_reached_pins=[]) for lane in candidate_lanes]
     previous_frame = None
+    gated_count = 0
     progress_every = max(1, total_frames // 50)
     capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
@@ -168,12 +175,19 @@ def _extract_shots_linear(
             break
         if frame_skip > 1 and frame_index % frame_skip != 0:
             continue
+        if motion_gate and not frame_has_motion(frame, previous_frame, motion_gate_threshold):
+            _append_zero_signals(states, candidate_lanes, frame, previous_frame)
+            previous_frame = frame
+            gated_count += 1
+            continue
         persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels)
         _update_lane_signals(states, candidate_lanes, frame, previous_frame, persons, target)
         previous_frame = frame
         if frame_index and frame_index % progress_every == 0:
             print(f"  linear: {frame_index}/{total_frames} ({frame_index/total_frames*100:.1f}%)", flush=True)
 
+    if motion_gate and gated_count:
+        print(f"  motion-gate skipped YOLO on {gated_count} frames", flush=True)
     effective_fps = fps / frame_skip
     return find_shot_boundaries(_states_to_signals(states), effective_fps, params)
 
@@ -191,6 +205,8 @@ def _extract_shots_probe(
     person_confidence_threshold: float,
     person_min_height_pixels: int,
     frame_skip: int = 1,
+    motion_gate: bool = False,
+    motion_gate_threshold: float = 3.0,
 ) -> list[ShotSegment]:
     """Sparse probing at ``probe_interval_seconds`` then range-expand on hits."""
     probe_interval_frames = max(1, int(probe_interval_seconds * fps))
@@ -243,6 +259,7 @@ def _extract_shots_probe(
         window_shots = _scan_window(
             capture, window_start, window_end, fps, target, candidate_lanes, params,
             person_confidence_threshold, person_min_height_pixels, frame_skip,
+            motion_gate, motion_gate_threshold,
         )
         # Dedup against any previously-found shot covering the same start frame
         new_shots = [
@@ -278,6 +295,8 @@ def _scan_window(
     person_confidence_threshold: float,
     person_min_height_pixels: int,
     frame_skip: int = 1,
+    motion_gate: bool = False,
+    motion_gate_threshold: float = 3.0,
 ) -> list[ShotSegment]:
     """Process a contiguous frame range, returning shots with VIDEO-ABSOLUTE frame indices."""
     states = [_LaneState(name=lane.name, bowler_confidence=[], pose_motion=[], pin_motion=[], ball_reached_pins=[]) for lane in candidate_lanes]
@@ -290,6 +309,10 @@ def _scan_window(
         if not ok:
             break
         if frame_skip > 1 and i % frame_skip != 0:
+            continue
+        if motion_gate and not frame_has_motion(frame, previous_frame, motion_gate_threshold):
+            _append_zero_signals(states, candidate_lanes, frame, previous_frame)
+            previous_frame = frame
             continue
         persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels)
         _update_lane_signals(states, candidate_lanes, frame, previous_frame, persons, target)
@@ -332,6 +355,26 @@ def _update_lane_signals(
             state.pose_motion.append(0.0)
         state.previous_bowler_centroid = best_centroid
 
+        if previous_frame is not None:
+            state.pin_motion.append(pin_zone_motion(frame, previous_frame, lane.pin_zone))
+        else:
+            state.pin_motion.append(0.0)
+        state.ball_reached_pins.append(False)
+
+
+def _append_zero_signals(
+    states: list[_LaneState],
+    lanes: list[LaneCalibration],
+    frame: np.ndarray,
+    previous_frame: np.ndarray | None,
+) -> None:
+    """Append zero-bowler signals when the motion gate skips YOLO.
+
+    Pin-zone motion is still computed (cheap) so the settle detector stays accurate.
+    """
+    for state, lane in zip(states, lanes):
+        state.bowler_confidence.append(0.0)
+        state.pose_motion.append(0.0)
         if previous_frame is not None:
             state.pin_motion.append(pin_zone_motion(frame, previous_frame, lane.pin_zone))
         else:

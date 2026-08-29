@@ -24,6 +24,27 @@ def _load_person_model(model_name: str) -> "YOLO":
     return YOLO(model_name)
 
 
+def frame_has_motion(
+    frame: np.ndarray,
+    prev_frame: np.ndarray | None,
+    threshold: float = 3.0,
+) -> bool:
+    """Fast global motion check via mean absolute frame difference.
+
+    Returns True if the mean pixel difference between consecutive frames exceeds
+    ``threshold``, indicating enough scene change to warrant YOLO inference.
+    Always returns True when ``prev_frame`` is None (first frame).
+    """
+    if prev_frame is None:
+        return True
+    if frame.shape != prev_frame.shape:
+        return True
+    gray_now = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    diff = cv2.absdiff(gray_now, gray_prev)
+    return float(diff.mean()) > threshold
+
+
 def detect_persons(
     frame: np.ndarray,
     confidence_threshold: float = 0.5,
