@@ -86,12 +86,12 @@
 | 10 | Optimization — downscale cache | ✅ Done | `<source>.detect_<scale>x.mp4` auto-cached + reused. CLI snap-to-supported-factor with confirmation. |
 | 11 | Optimization — merge as default | ✅ Done | `--merge / --no-merge`; standalone `merge` subcommand still available. |
 | 12 | Optimization — ffmpeg live stderr streaming | ✅ Done | `_run_ffmpeg_streamed`; `\r` → `\n` translation via text-mode reads. |
-| 13 | Format presets (`--format <preset>`) | 🟨 Partial | `formats.py` defines all presets; `cli.py` wires `--format` into `extract` with preset lookup, `validate_bowler_lane`, probe-interval override, and shot-count warnings. Remaining: `lane_policy` is not enforced in the pipeline — the field exists but `extract_shots` does not use it to filter lanes automatically. |
+| 13 | Format presets (`--format <preset>`) | ✅ Done | `formats.py` defines all presets; `cli.py` wires `--format` into `extract` with preset lookup, `validate_bowler_lane`, probe-interval override, and shot-count warnings. `lane_policy` is now enforced in `extract_shots`: `fixed-lane` requires `bowler_lane`, `single-lane` auto-selects when only one lane is calibrated. Tests in `tests/test_formats.py`. |
 | 14 | `build-bowler` CLI subcommand | ✅ Done | `cli.py:176-218` implements the `build-bowler` command with `--name`, `--calibration`, `--reference <image>=<lane>`, `--out`, `--samples-per-image`, and `--seed`. Smoke test verifies the subcommand is registered. |
-| 15 | Frame-skip in range-expand windows | ⬜ Not started | Estimated additional ~3× speedup on top of downscale. Requires re-tuning `stationary_pose_frames` / `pin_settle_frames`. |
-| 16 | Motion-gate YOLO via background subtraction | ⬜ Not started | Estimated ~2× speedup in dead-time regions. |
-| 17 | Optional GPU acceleration (CUDA torch) | ⬜ Not started | Hardware-dependent; not required for project goals. |
-| 18 | Format auto-detect from prefix scan | ⬜ Not started | Useful when `--format` isn't provided for singles-practice / open. |
+| 15 | Frame-skip in range-expand windows | ✅ Done | `--frame-skip N` processes every Nth frame; effective fps adjusted for the state machine; absolute frame indices mapped back on export. |
+| 16 | Motion-gate YOLO via background subtraction | ✅ Done | `--motion-gate` / `--motion-gate-threshold` skip YOLO on static frames; pin-zone motion still computed. `frame_has_motion()` in `detect.py`. |
+| 17 | Optional GPU acceleration (CUDA torch) | ✅ Done | `--device auto/cpu/cuda`; `detect_device()` resolves CUDA availability; threaded through pipeline to YOLO inference. |
+| 18 | Format auto-detect from prefix scan | ✅ Done | `detect-format` CLI subcommand + auto-detect in `extract` when `--format` omitted. `scan_prefix()` probes first 30s; `detect_format_from_prefix()` maps lane activity to preset. Tests in `tests/test_formats.py`. |
 
 ## Dependencies between phases
 
