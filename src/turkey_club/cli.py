@@ -76,6 +76,7 @@ def extract(
     merge: bool = typer.Option(True, "--merge/--no-merge", help="After exporting per-shot clips, concatenate them into <out>/all_shots.mp4. Use --no-merge to skip."),
     merge_out: Path | None = typer.Option(None, "--merge-out", help="Override merged-video output path. Default: <out>/all_shots.mp4."),
     downscale_factor: float = typer.Option(0.5, "--downscale-factor", help="Detection-time downscale. Must be one of 1.0, 0.75, 0.5, 0.4, 0.33, 0.25; other values snap down to the closest supported and prompt for confirmation."),
+    frame_skip: int = typer.Option(1, "--frame-skip", help="Process every Nth frame during scan windows. Higher values reduce YOLO inference calls proportionally. 1 = every frame (default), 2 = every other, 3 = every third."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-confirm any adjustment prompts (required for non-interactive runs)."),
     cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
 ) -> None:
@@ -123,6 +124,10 @@ def extract(
     video_path = resolve_source(video, cache_dir=cache_dir)
     typer.echo(f"Using video: {video_path}")
 
+    if frame_skip < 1:
+        typer.echo("--frame-skip must be >= 1", err=True)
+        raise typer.Exit(code=2)
+
     shot_count = extract_shots(
         video=video_path,
         bowler_target_path=bowler_target,
@@ -135,6 +140,7 @@ def extract(
         merge=merge,
         merge_out=merge_out,
         downscale_factor=snapped_factor,
+        frame_skip=frame_skip,
     )
 
     if preset is not None and shot_count is not None:
