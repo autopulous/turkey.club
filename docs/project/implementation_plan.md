@@ -81,13 +81,13 @@
 | 5 | Ball & pin motion primitives | ✅ Done | Pin-motion frame-diff is sufficient; ball detection stays placeholder. |
 | 6 | Shot boundary state machine (`find_shot_boundaries`) | ✅ Done | Synthetic-signal smoke test verifies exact frame indices. |
 | 7 | Pipeline orchestration + clip export | ✅ Done | Linear + probe strategies; ffmpeg frame-accurate cuts. |
-| 8 | End-to-end validation on Game 1 | 🟨 In flight | First probe-strategy run found ground-truth shot at 1:35; full run pending after the latest threshold + downscale changes. |
+| 8 | End-to-end validation on Game 1 | 🟨 In flight | First probe-strategy run found ground-truth shot at 1:35; full run pending after the latest threshold + downscale changes. Sample videos, calibration (`venue.json`), and bowler target (`clemons.json`) reside in `Sample Videos/2026 PBA Colony Park Lanes Games Challenge - Non-Champion Event - Game 1/`. |
 | 9 | Optimization — probe-then-range search | ✅ Done | Includes the strict-forward-progress + dedup bug fix discovered during validation. |
 | 10 | Optimization — downscale cache | ✅ Done | `<source>.detect_<scale>x.mp4` auto-cached + reused. CLI snap-to-supported-factor with confirmation. |
 | 11 | Optimization — merge as default | ✅ Done | `--merge / --no-merge`; standalone `merge` subcommand still available. |
 | 12 | Optimization — ffmpeg live stderr streaming | ✅ Done | `_run_ffmpeg_streamed`; `\r` → `\n` translation via text-mode reads. |
-| 13 | Format presets (`--format <preset>`) | 🟨 Partial | `--bowler-lane` available; preset bundling not yet wired. |
-| 14 | `build-bowler` CLI subcommand | ⬜ Not started | Currently invoked via small Python script using `identify.build_bowler_target_from_references`. |
+| 13 | Format presets (`--format <preset>`) | 🟨 Partial | `formats.py` defines all presets; `cli.py` wires `--format` into `extract` with preset lookup, `validate_bowler_lane`, probe-interval override, and shot-count warnings. Remaining: `lane_policy` is not enforced in the pipeline — the field exists but `extract_shots` does not use it to filter lanes automatically. |
+| 14 | `build-bowler` CLI subcommand | ✅ Done | `cli.py:176-218` implements the `build-bowler` command with `--name`, `--calibration`, `--reference <image>=<lane>`, `--out`, `--samples-per-image`, and `--seed`. Smoke test verifies the subcommand is registered. |
 | 15 | Frame-skip in range-expand windows | ⬜ Not started | Estimated additional ~3× speedup on top of downscale. Requires re-tuning `stationary_pose_frames` / `pin_settle_frames`. |
 | 16 | Motion-gate YOLO via background subtraction | ⬜ Not started | Estimated ~2× speedup in dead-time regions. |
 | 17 | Optional GPU acceleration (CUDA torch) | ⬜ Not started | Hardware-dependent; not required for project goals. |

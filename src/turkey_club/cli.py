@@ -130,6 +130,7 @@ def extract(
         out_dir=out,
         strategy=strategy,
         bowler_lane=bowler_lane,
+        lane_policy=preset.lane_policy if preset is not None else None,
         probe_interval_seconds=effective_probe_interval,
         merge=merge,
         merge_out=merge_out,

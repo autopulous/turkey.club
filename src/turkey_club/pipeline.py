@@ -45,6 +45,7 @@ def extract_shots(
     out_dir: Path,
     strategy: Strategy = "probe",
     bowler_lane: str | None = None,
+    lane_policy: str | None = None,
     probe_interval_seconds: float = 10.0,
     expand_seconds_before: float = 15.0,
     expand_seconds_after: float = 25.0,
@@ -75,6 +76,11 @@ def extract_shots(
 
     if bowler_lane is not None:
         candidate_lanes = [next(lane for lane in scaled_lanes if lane.name == bowler_lane)]
+    elif lane_policy == "fixed-lane":
+        raise ValueError("lane_policy='fixed-lane' requires bowler_lane to be set")
+    elif lane_policy == "single-lane" and len(scaled_lanes) == 1:
+        candidate_lanes = scaled_lanes
+        print(f"single-lane policy: using only lane {scaled_lanes[0].name!r}", flush=True)
     else:
         candidate_lanes = scaled_lanes
 
