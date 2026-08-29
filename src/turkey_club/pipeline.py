@@ -38,6 +38,80 @@ class _LaneState:
     previous_bowler_centroid: tuple[float, float] | None = None
 
 
+def scan_prefix(
+    video: Path,
+    bowler_target_path: Path,
+    calibration_path: Path,
+    prefix_seconds: float = 30.0,
+    probe_interval_seconds: float = 2.0,
+    person_confidence_threshold: float = 0.4,
+    person_min_height_pixels: int = 80,
+    downscale_factor: float = 0.5,
+    device: str = "auto",
+) -> dict:
+    """Scan the first ``prefix_seconds`` of video and return lane activity for format detection."""
+    venue = VenueCalibration.load(calibration_path)
+    target = BowlerTarget.load(bowler_target_path)
+
+    detection_video = ensure_downscaled_video(video, scale_factor=downscale_factor)
+    scaled_lanes = [_scale_lane(lane, downscale_factor) for lane in venue.lanes]
+    scaled_min_height = max(20, int(person_min_height_pixels * downscale_factor))
+    resolved_device = detect_device(device)
+    bowler_thresh = SegmentationParameters().bowler_confidence_threshold
+
+    capture = cv2.VideoCapture(str(detection_video))
+    if not capture.isOpened():
+        raise RuntimeError(f"Could not open detection video: {detection_video}")
+    fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    prefix_frames = min(total_frames, int(prefix_seconds * fps))
+    probe_interval = max(1, int(probe_interval_seconds * fps))
+
+    active_lanes: set[str] = set()
+    probes = 0
+
+    try:
+        frame_index = 0
+        while frame_index < prefix_frames:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ok, frame = capture.read()
+            if not ok:
+                break
+            probes += 1
+            persons = detect_persons(
+                frame,
+                confidence_threshold=person_confidence_threshold,
+                min_height_pixels=scaled_min_height,
+                device=resolved_device,
+            )
+            for lane in scaled_lanes:
+                if lane.name in active_lanes:
+                    continue
+                for person in persons:
+                    if not bbox_foot_in_polygon(person, lane.approach_zone):
+                        continue
+                    confidence = identify_bowler_in_frame(frame, person, target, use_ocr=False)
+                    if confidence >= bowler_thresh:
+                        active_lanes.add(lane.name)
+                        print(f"  prefix-scan probe #{probes} @ frame {frame_index}: bowler on {lane.name!r}", flush=True)
+                        break
+            frame_index += probe_interval
+    finally:
+        capture.release()
+
+    print(
+        f"  prefix-scan: {probes} probes over {prefix_seconds:.0f}s, "
+        f"active lanes: {sorted(active_lanes) or 'none'}",
+        flush=True,
+    )
+    return {
+        "active_lanes": active_lanes,
+        "total_calibrated": len(venue.lanes),
+        "prefix_seconds": prefix_seconds,
+        "probes": probes,
+    }
+
+
 def extract_shots(
     video: Path,
     bowler_target_path: Path,

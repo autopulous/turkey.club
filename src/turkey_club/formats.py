@@ -36,6 +36,23 @@ class FormatPreset:
         return None
 
 
+def detect_format_from_prefix(
+    active_lanes: set[str],
+    total_calibrated: int,
+) -> FormatPreset | None:
+    """Infer a format preset from which lanes had bowler activity in a prefix scan.
+
+    Returns None when the scan is inconclusive (no activity detected).
+    """
+    if not active_lanes:
+        return None
+    if len(active_lanes) > 1:
+        return PRESETS["pba-qualifying"]
+    if total_calibrated == 1:
+        return PRESETS["singles-practice"]
+    return PRESETS["baker"]
+
+
 PRESETS: dict[str, FormatPreset] = {
     "pba-qualifying": FormatPreset(
         name="pba-qualifying",

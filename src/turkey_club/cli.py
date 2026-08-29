@@ -105,12 +105,6 @@ def extract(
             raise typer.Exit(code=2)
         typer.echo(f"Format: {preset.name} (lane_policy={preset.lane_policy})")
 
-    effective_probe_interval = (
-        probe_interval_seconds
-        if probe_interval_seconds is not None
-        else (preset.probe_interval_seconds if preset is not None else 10.0)
-    )
-
     try:
         snapped_factor = snap_downscale_factor(downscale_factor)
     except ValueError as error:
@@ -126,6 +120,27 @@ def extract(
 
     video_path = resolve_source(video, cache_dir=cache_dir)
     typer.echo(f"Using video: {video_path}")
+
+    if format is None:
+        from turkey_club.formats import detect_format_from_prefix
+        from turkey_club.pipeline import scan_prefix
+
+        typer.echo("No --format given; running prefix scan to auto-detect...")
+        scan_result = scan_prefix(
+            video_path, bowler_target, calibration,
+            downscale_factor=snapped_factor, device=device,
+        )
+        preset = detect_format_from_prefix(scan_result["active_lanes"], scan_result["total_calibrated"])
+        if preset is not None:
+            typer.echo(f"Auto-detected format: {preset.name} (lane_policy={preset.lane_policy})")
+        else:
+            typer.echo("Auto-detect inconclusive; proceeding without format preset")
+
+    effective_probe_interval = (
+        probe_interval_seconds
+        if probe_interval_seconds is not None
+        else (preset.probe_interval_seconds if preset is not None else 10.0)
+    )
 
     if frame_skip < 1:
         typer.echo("--frame-skip must be >= 1", err=True)
@@ -241,6 +256,47 @@ def merge(
     from turkey_club.merge import merge_clips
 
     merge_clips(clips_dir, out, pattern=pattern, reencode=reencode)
+
+
+@app.command("detect-format")
+def detect_format(
+    video: str = typer.Option(
+        ...,
+        help="Local video path OR a remote URL (YouTube, direct MP4, any yt-dlp-supported source).",
+    ),
+    bowler_target: Path = typer.Option(
+        ...,
+        "--bowler-target",
+        exists=True,
+        help="BowlerTarget JSON (built ahead of time with sampled shirt colors).",
+    ),
+    calibration: Path = typer.Option(..., exists=True, help="Venue calibration JSON from `calibrate`."),
+    prefix_seconds: float = typer.Option(30.0, "--prefix-seconds", help="How many seconds of video to scan."),
+    downscale_factor: float = typer.Option(0.5, "--downscale-factor", help="Detection-time downscale."),
+    device: str = typer.Option("auto", "--device", help="Detection device: 'auto', 'cpu', or 'cuda'."),
+    cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
+) -> None:
+    """Scan the first N seconds of video to detect the bowling format from lane activity."""
+    from turkey_club.formats import detect_format_from_prefix
+    from turkey_club.pipeline import scan_prefix
+    from turkey_club.source import resolve_source
+
+    video_path = resolve_source(video, cache_dir=cache_dir)
+    typer.echo(f"Using video: {video_path}")
+
+    scan_result = scan_prefix(
+        video_path, bowler_target, calibration,
+        prefix_seconds=prefix_seconds, downscale_factor=downscale_factor, device=device,
+    )
+    preset = detect_format_from_prefix(scan_result["active_lanes"], scan_result["total_calibrated"])
+
+    typer.echo(f"Scanned {scan_result['prefix_seconds']:.0f}s ({scan_result['probes']} probes)")
+    typer.echo(f"Active lanes: {sorted(scan_result['active_lanes']) or 'none'}")
+    typer.echo(f"Calibrated lanes: {scan_result['total_calibrated']}")
+    if preset is not None:
+        typer.echo(f"Detected format: {preset.name} (lane_policy={preset.lane_policy})")
+    else:
+        typer.echo("Format: inconclusive (no bowler activity detected in prefix)")
 
 
 if __name__ == "__main__":
