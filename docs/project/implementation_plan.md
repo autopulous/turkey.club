@@ -22,22 +22,20 @@
                 │  scale polygons + params       │
                 │                                │
                 │  _extract_shots_probe (default)│
-                │   ├─ probe loop                │
+                │   ├─ probe loop (10s interval) │
                 │   │   detect_persons (YOLOv8)  │
-                │   │   identify_bowler          │
+                │   │   identify_bowler (HSV)    │
                 │   │   ────────────────────     │
-                │   │   on HIT: range-expand     │
-                │   ▼                            │
-                │   _scan_window                 │
-                │     full per-frame signals     │
-                │     ─ bowler_confidence        │
-                │     ─ pose_motion              │
-                │     ─ pin_motion               │
-                │     ─ ball_reached_pins        │
+                │   │   on HIT: fixed-duration   │
+                │   │   clip (2s back + 10s fwd) │
+                │   ▼                            │ ──► [ShotSegment]
                 │                                │
-                │  find_shot_boundaries          │ ──► [ShotSegment]
-                │  (state machine: SETUP →       │
-                │   onset → impact → settle)     │
+                │  _extract_shots_linear (alt)   │
+                │   └─ _scan_window              │
+                │     full per-frame signals     │
+                │     find_shot_boundaries       │
+                │     (state machine: SETUP →    │
+                │      onset → impact → settle)  │ ──► [ShotSegment]
                 └────────────────────────────────┘
                                 │
                                 ▼
@@ -81,7 +79,7 @@
 | 5 | Ball & pin motion primitives | ✅ Done | Pin-motion frame-diff is sufficient; ball detection stays placeholder. |
 | 6 | Shot boundary state machine (`find_shot_boundaries`) | ✅ Done | Synthetic-signal smoke test verifies exact frame indices. |
 | 7 | Pipeline orchestration + clip export | ✅ Done | Linear + probe strategies; ffmpeg frame-accurate cuts. |
-| 8 | End-to-end validation on Game 1 | 🟨 In flight | First probe-strategy run found ground-truth shot at 1:35; full run pending after the latest threshold + downscale changes. Sample videos, calibration (`venue.json`), and bowler target (`clemons.json`) reside in `Sample Videos/2026 PBA Colony Park Lanes Games Challenge - Non-Champion Event - Game 1/`. |
+| 8 | End-to-end validation on Game 1 | 🟨 In flight | **Architectural change:** probe strategy now creates a fixed-duration clip directly from each HIT (2s lookback + 10s forward) instead of range-expanding into `_scan_window` + state machine. First run with state machine produced 79 shots (37 HITs fragmented); simplified HIT-to-clip model pending validation. State machine retained for linear strategy only. Sample videos, calibration (`venue.json`), and bowler target (`clemons.json`) reside in `Sample Videos/2026 PBA Colony Park Lanes Games Challenge - Non-Champion Event - Game 1/`. |
 | 9 | Optimization — probe-then-range search | ✅ Done | Includes the strict-forward-progress + dedup bug fix discovered during validation. |
 | 10 | Optimization — downscale cache | ✅ Done | `<source>.detect_<scale>x.mp4` auto-cached + reused. CLI snap-to-supported-factor with confirmation. |
 | 11 | Optimization — merge as default | ✅ Done | `--merge / --no-merge`; standalone `merge` subcommand still available. |

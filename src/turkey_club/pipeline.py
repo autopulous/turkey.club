@@ -121,8 +121,8 @@ def extract_shots(
     bowler_lane: str | None = None,
     lane_policy: str | None = None,
     probe_interval_seconds: float = 10.0,
-    expand_seconds_before: float = 15.0,
-    expand_seconds_after: float = 25.0,
+    shot_lookback_seconds: float = 2.0,
+    shot_duration_seconds: float = 10.0,
     person_confidence_threshold: float = 0.4,
     person_min_height_pixels: int = 80,
     merge: bool = True,
@@ -193,7 +193,7 @@ def extract_shots(
         elif strategy == "probe":
             shots = _extract_shots_probe(
                 capture, total_frames, fps, target, candidate_lanes, scaled_params,
-                probe_interval_seconds, expand_seconds_before, expand_seconds_after,
+                probe_interval_seconds, shot_lookback_seconds, shot_duration_seconds,
                 person_confidence_threshold, scaled_min_height, frame_skip,
                 motion_gate, motion_gate_threshold, resolved_device,
             )
@@ -279,8 +279,8 @@ def _extract_shots_probe(
     candidate_lanes: list[LaneCalibration],
     params: SegmentationParameters,
     probe_interval_seconds: float,
-    expand_seconds_before: float,
-    expand_seconds_after: float,
+    shot_lookback_seconds: float,
+    shot_duration_seconds: float,
     person_confidence_threshold: float,
     person_min_height_pixels: int,
     frame_skip: int = 1,
@@ -288,16 +288,16 @@ def _extract_shots_probe(
     motion_gate_threshold: float = 3.0,
     device: str = "cpu",
 ) -> list[ShotSegment]:
-    """Sparse probing at ``probe_interval_seconds`` then range-expand on hits."""
+    """Sparse probing at ``probe_interval_seconds``; each HIT becomes a fixed-duration clip."""
     probe_interval_frames = max(1, int(probe_interval_seconds * fps))
-    lookback_frames = int(expand_seconds_before * fps)
-    forward_frames = int(expand_seconds_after * fps)
+    lookback_frames = int(shot_lookback_seconds * fps)
+    forward_frames = int(shot_duration_seconds * fps)
     bowler_thresh = params.bowler_confidence_threshold
 
     all_shots: list[ShotSegment] = []
     probe_frame = 0
     probe_count = 0
-    expand_count = 0
+    hit_count = 0
 
     while probe_frame < total_frames:
         probe_count += 1
@@ -306,18 +306,21 @@ def _extract_shots_probe(
         if not ok:
             break
         persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels, device=device)
-        hit = False
+        hit_lane_name: str | None = None
+        hit_confidence: float = 0.0
         for lane in candidate_lanes:
             for person in persons:
                 if not bbox_foot_in_polygon(person, lane.approach_zone):
                     continue
-                if identify_bowler_in_frame(frame, person, target, use_ocr=False) >= bowler_thresh:
-                    hit = True
+                confidence = identify_bowler_in_frame(frame, person, target, use_ocr=False)
+                if confidence >= bowler_thresh:
+                    hit_lane_name = lane.name
+                    hit_confidence = confidence
                     break
-            if hit:
+            if hit_lane_name is not None:
                 break
 
-        if not hit:
+        if hit_lane_name is None:
             print(
                 f"  probe #{probe_count} @ frame {probe_frame} of {total_frames} "
                 f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): no hit",
@@ -326,40 +329,42 @@ def _extract_shots_probe(
             probe_frame += probe_interval_frames
             continue
 
-        expand_count += 1
-        window_start = max(0, probe_frame - lookback_frames)
-        window_end = min(total_frames, probe_frame + forward_frames)
-        print(
-            f"  probe #{probe_count} @ frame {probe_frame} of {total_frames} "
-            f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): HIT #{expand_count} — "
-            f"expanding [{window_start}-{window_end}]",
-            flush=True,
-        )
+        start_frame = max(0, probe_frame - lookback_frames)
+        end_frame = min(total_frames, probe_frame + forward_frames)
+        duration = (end_frame - start_frame) / fps
 
-        window_shots = _scan_window(
-            capture, window_start, window_end, fps, target, candidate_lanes, params,
-            person_confidence_threshold, person_min_height_pixels, frame_skip,
-            motion_gate, motion_gate_threshold, device,
+        is_dup = any(
+            existing.start_frame == start_frame and existing.lane_name == hit_lane_name
+            for existing in all_shots
         )
-        # Dedup against any previously-found shot covering the same start frame
-        new_shots = [
-            shot for shot in window_shots
-            if not any(existing.start_frame == shot.start_frame and existing.lane_name == shot.lane_name for existing in all_shots)
-        ]
-        all_shots.extend(new_shots)
-        print(
-            f"    window yielded {len(window_shots)} shot(s), {len(new_shots)} new "
-            f"(total so far: {len(all_shots)})",
-            flush=True,
-        )
+        if not is_dup:
+            hit_count += 1
+            shot = ShotSegment(
+                lane_name=hit_lane_name,
+                start_frame=start_frame,
+                end_frame=end_frame,
+                bowler_confidence=hit_confidence,
+                gutter_fallback=False,
+            )
+            all_shots.append(shot)
+            print(
+                f"  probe #{probe_count} @ frame {probe_frame} "
+                f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): "
+                f"HIT #{hit_count} — lane={hit_lane_name} conf={hit_confidence:.3f} "
+                f"-> shot [{start_frame}-{end_frame}] ({duration:.1f}s)",
+                flush=True,
+            )
+        else:
+            print(
+                f"  probe #{probe_count} @ frame {probe_frame} "
+                f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): "
+                f"HIT (dup, skipped) — lane={hit_lane_name}",
+                flush=True,
+            )
 
-        # Enforce strict forward progress: at least probe_interval past current probe_frame,
-        # AND past any newly-found shot's end. Without this, an end_frame at probe_frame - 1
-        # creates an infinite loop when the bowler is still in the approach zone.
-        next_after_shot = window_shots[-1].end_frame + 1 if window_shots else probe_frame
-        probe_frame = max(next_after_shot, probe_frame + probe_interval_frames)
+        probe_frame = max(end_frame + 1, probe_frame + probe_interval_frames)
 
-    print(f"  probes: {probe_count}, range-expansions: {expand_count}", flush=True)
+    print(f"  probes: {probe_count}, hits: {hit_count}", flush=True)
     all_shots.sort(key=lambda shot: shot.start_frame)
     return all_shots
 
