@@ -158,13 +158,14 @@ def extract_shots(
     target = BowlerTarget.load(bowler_target_path)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    detection_video = ensure_downscaled_video(video, scale_factor=downscale_factor)
-    scaled_lanes = [_scale_lane(lane, downscale_factor) for lane in venue.lanes]
+    effective_downscale = 1.0 if strategy == "probe" else downscale_factor
+    detection_video = ensure_downscaled_video(video, scale_factor=effective_downscale)
+    scaled_lanes = [_scale_lane(lane, effective_downscale) for lane in venue.lanes]
     scaled_params = dataclasses.replace(
         SegmentationParameters(),
-        pose_motion_threshold_pixels=SegmentationParameters().pose_motion_threshold_pixels * downscale_factor,
+        pose_motion_threshold_pixels=SegmentationParameters().pose_motion_threshold_pixels * effective_downscale,
     )
-    scaled_min_height = max(20, int(person_min_height_pixels * downscale_factor))
+    scaled_min_height = max(20, int(person_min_height_pixels * effective_downscale))
 
     resolved_device = detect_device(device)
     print(f"device={resolved_device} (requested={device})", flush=True)

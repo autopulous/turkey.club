@@ -3,12 +3,69 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import click
 import typer
+import typer.core
+
+_COMMAND_ORDER = [
+    "fetch",
+    "detect-format",
+    "calibrate",
+    "preview",
+    "build-bowler",
+    "extract",
+    "merge",
+    "debug-clustering",
+    "help",
+]
+
+
+class NoBuiltinHelp(typer.core.TyperGroup):
+    """Suppress Click's built-in --help flag so the ``help`` subcommand is the only entry point."""
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        registered = set(super().list_commands(ctx))
+        ordered = [name for name in _COMMAND_ORDER if name in registered]
+        ordered += sorted(registered - set(ordered))
+        return ordered
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        return [p for p in super().get_params(ctx)
+                if not (isinstance(p, click.Option) and "--help" in (p.opts or []))]
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        cmd = super().get_command(ctx, cmd_name)
+        if cmd is not None:
+            cmd.add_help_option = False
+        return cmd
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if "--help" in args or "-h" in args:
+            remaining = [a for a in args if a not in ("--help", "-h")]
+            args = ["help"] + remaining
+        ctx.help_option_names = []
+        return super().parse_args(ctx, args)
+
+    def resolve_command(self, ctx: click.Context, args: list[str]) -> tuple:
+        cmd_name, cmd, rest = super().resolve_command(ctx, args)
+        if rest and ("--help" in rest or "-h" in rest):
+            rest = [a for a in rest if a not in ("--help", "-h")]
+            return "help", self.get_command(ctx, "help"), [cmd_name] + rest
+        return cmd_name, cmd, rest
 
 app = typer.Typer(
-    no_args_is_help=True,
+    cls=NoBuiltinHelp,
+    no_args_is_help=False,
     help="Extract per-shot clips of a target bowler from a fixed-camera match video.",
+    invoke_without_command=True,
 )
+
+
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context) -> None:
+    """Extract per-shot clips of a target bowler from a fixed-camera match video."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(help_command, command="")
 
 
 @app.command()
@@ -70,7 +127,7 @@ def extract(
             "Explicit --probe-interval and --bowler-lane still override the preset."
         ),
     ),
-    strategy: str = typer.Option("probe", "--strategy", help="Search strategy: 'probe' (sparse probes + fixed clips), 'linear' (every-frame scan), or 'multipass' (census → cluster → rotation → binary-search boundaries)."),
+    strategy: str = typer.Option("probe", "--strategy", help="Search strategy: 'probe' (sparse probes + fixed clips), 'linear' (every-frame scan), or 'multipass' (census, cluster, rotation, binary-search boundaries)."),
     bowler_lane: str | None = typer.Option(None, "--bowler-lane", help="Restrict search to a single calibrated lane (e.g. for Baker format). Default: search all calibrated lanes."),
     probe_interval_seconds: float | None = typer.Option(None, "--probe-interval", help="Probe interval in seconds (probe strategy only). Default: 10.0, or the format preset's value."),
     merge: bool = typer.Option(True, "--merge/--no-merge", help="After exporting per-shot clips, concatenate them into <out>/all_shots.mp4. Use --no-merge to skip."),
@@ -432,6 +489,50 @@ def debug_clustering(
     typer.echo(f"Recorded {len(steps)} comparison steps. Opening viewer ...")
 
     run_debug_viewer(steps, census_dir, target_obj)
+
+
+def _suppress_help_option(cmd: click.Command) -> None:
+    """Prevent the --help option from appearing in rendered help."""
+    cmd.add_help_option = False
+
+
+@app.command("help")
+def help_command(
+    command: str = typer.Argument("", help="Command name, or 'all' to show every command's options."),
+) -> None:
+    """Show help for a command, or for all commands at once."""
+    cli = typer.main.get_command(app)
+    ctx = click.Context(cli, info_name="turkey-club")
+
+    if not command:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
+
+    if command == "all":
+        typer.echo(ctx.get_help())
+        typer.echo("")
+        for name in cli.list_commands(ctx):
+            if name == "help":
+                continue
+            cmd = cli.get_command(ctx, name)
+            _suppress_help_option(cmd)
+            typer.echo("=" * 72)
+            typer.echo(f"  {name}")
+            typer.echo("=" * 72)
+            sub_ctx = click.Context(cmd, info_name=name, parent=ctx)
+            typer.echo(sub_ctx.get_help())
+            typer.echo("")
+        raise typer.Exit()
+
+    commands = ctx.command.commands
+    if command not in commands:
+        typer.echo(f"Unknown command: {command!r}. Available: {', '.join(sorted(commands))}", err=True)
+        raise typer.Exit(code=2)
+
+    cmd = commands[command]
+    _suppress_help_option(cmd)
+    sub_ctx = click.Context(cmd, info_name=command, parent=ctx)
+    typer.echo(sub_ctx.get_help())
 
 
 if __name__ == "__main__":
