@@ -1,6 +1,7 @@
 """Per-frame detection: persons, ball position in lane, pin-zone motion."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -12,14 +13,33 @@ from turkey_club.config import Polygon
 if TYPE_CHECKING:
     from ultralytics import YOLO
 
-PersonBBox = tuple[int, int, int, int]
+Keypoints = list[tuple[float, float, float]]
 
-DEFAULT_PERSON_MODEL = "yolov8n.pt"
+KEYPOINT_NOSE = 0
+KEYPOINT_LEFT_EYE = 1
+KEYPOINT_RIGHT_EYE = 2
+KEYPOINT_LEFT_EAR = 3
+KEYPOINT_RIGHT_EAR = 4
+KEYPOINT_LEFT_SHOULDER = 5
+KEYPOINT_RIGHT_SHOULDER = 6
+KEYPOINT_LEFT_HIP = 11
+KEYPOINT_RIGHT_HIP = 12
+
+
+@dataclass(frozen=True)
+class PersonDetection:
+    """A detected person with bounding box and optional pose keypoints."""
+
+    bbox: tuple[int, int, int, int]
+    keypoints: Keypoints | None = None
+
+
+DEFAULT_PERSON_MODEL = "yolov8n-pose.pt"
 
 
 def detect_device(requested: str = "auto") -> str:
     """Resolve the detection device: 'cpu', 'cuda', or 'auto' (pick CUDA if available)."""
-    if requested == "auto":
+    if "auto" == requested:
         try:
             import torch
             return "cuda" if torch.cuda.is_available() else "cpu"
@@ -62,8 +82,8 @@ def detect_persons(
     min_height_pixels: int = 80,
     model_name: str = DEFAULT_PERSON_MODEL,
     device: str = "cpu",
-) -> list[PersonBBox]:
-    """Return person bounding boxes (x1, y1, x2, y2) detected in ``frame``.
+) -> list[PersonDetection]:
+    """Return person detections (bbox + keypoints) found in ``frame``.
 
     Detections below ``confidence_threshold`` (passed through to YOLO) or shorter
     than ``min_height_pixels`` are dropped — the latter filter keeps distant
@@ -74,17 +94,32 @@ def detect_persons(
     if not results:
         return []
     boxes_tensor = results[0].boxes.xyxy
-    if boxes_tensor is None or len(boxes_tensor) == 0:
+    if boxes_tensor is None or 0 == len(boxes_tensor):
         return []
-    raw = boxes_tensor.cpu().numpy().astype(int)
-    return [
-        (int(x1), int(y1), int(x2), int(y2))
-        for x1, y1, x2, y2 in raw
-        if (y2 - y1) >= min_height_pixels
-    ]
+    raw_boxes = boxes_tensor.cpu().numpy().astype(int)
+
+    raw_keypoints = None
+    if results[0].keypoints is not None and results[0].keypoints.data is not None:
+        raw_keypoints = results[0].keypoints.data.cpu().numpy()
+
+    detections: list[PersonDetection] = []
+    for i, (x1, y1, x2, y2) in enumerate(raw_boxes):
+        if (y2 - y1) < min_height_pixels:
+            continue
+        kp: Keypoints | None = None
+        if raw_keypoints is not None:
+            kp = [
+                (float(raw_keypoints[i, j, 0]), float(raw_keypoints[i, j, 1]), float(raw_keypoints[i, j, 2]))
+                for j in range(17)
+            ]
+        detections.append(PersonDetection(
+            bbox=(int(x1), int(y1), int(x2), int(y2)),
+            keypoints=kp,
+        ))
+    return detections
 
 
-def bbox_foot_in_polygon(bbox: PersonBBox, polygon: Polygon) -> bool:
+def bbox_foot_in_polygon(bbox: tuple[int, int, int, int], polygon: Polygon) -> bool:
     """True iff the bottom-center of ``bbox`` (the person's foot position) lies in ``polygon``."""
     x1, _, x2, y2 = bbox
     cx = (x1 + x2) / 2.0
@@ -127,7 +162,7 @@ def detect_ball_in_lane(
 
     largest = max(qualifying, key=cv2.contourArea)
     moments = cv2.moments(largest)
-    if moments["m00"] == 0:
+    if 0 == moments["m00"]:
         return None
     cx = int(moments["m10"] / moments["m00"])
     cy = int(moments["m01"] / moments["m00"])
@@ -149,7 +184,7 @@ def pin_zone_motion(
     mask = np.zeros_like(diff)
     cv2.fillPoly(mask, [np.array(pin_polygon, dtype=np.int32)], 255)
     pin_pixel_count = int(np.count_nonzero(mask))
-    if pin_pixel_count == 0:
+    if 0 == pin_pixel_count:
         return 0.0
     masked_diff = cv2.bitwise_and(diff, mask)
     return float(masked_diff.sum()) / pin_pixel_count

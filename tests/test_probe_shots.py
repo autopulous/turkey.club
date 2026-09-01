@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from turkey_club.config import LaneCalibration, SegmentationParameters
+from turkey_club.detect import PersonDetection
 from turkey_club.identify import BowlerTarget
 from turkey_club.segment import ShotSegment
 
@@ -51,7 +52,7 @@ def test_single_hit_produces_one_segment(mock_detect, mock_bbox, mock_identify):
 
     hit_frame = probe_interval_frames  # second probe at frame 300
 
-    mock_detect.return_value = [{"bbox": [10, 10, 50, 100]}]
+    mock_detect.return_value = [PersonDetection(bbox=(10, 10, 50, 100))]
     mock_identify.side_effect = lambda *a, **kw: (
         0.85 if _fake_capture._call_count == 1 else 0.0
     )
@@ -89,7 +90,7 @@ def test_single_hit_produces_one_segment(mock_detect, mock_bbox, mock_identify):
 
 @patch("turkey_club.pipeline.identify_bowler_in_frame", return_value=0.85)
 @patch("turkey_club.pipeline.bbox_foot_in_polygon", return_value=True)
-@patch("turkey_club.pipeline.detect_persons", return_value=[{"bbox": [10, 10, 50, 100]}])
+@patch("turkey_club.pipeline.detect_persons", return_value=[PersonDetection(bbox=(10, 10, 50, 100))])
 def test_forward_progress_no_duplicate_start_frames(mock_detect, mock_bbox, mock_identify):
     """Every HIT produces a segment and no two share the same (start_frame, lane_name)."""
     from turkey_club.pipeline import _extract_shots_probe
@@ -117,7 +118,7 @@ def test_forward_progress_no_duplicate_start_frames(mock_detect, mock_bbox, mock
 
 @patch("turkey_club.pipeline.identify_bowler_in_frame", return_value=0.0)
 @patch("turkey_club.pipeline.bbox_foot_in_polygon", return_value=True)
-@patch("turkey_club.pipeline.detect_persons", return_value=[{"bbox": [10, 10, 50, 100]}])
+@patch("turkey_club.pipeline.detect_persons", return_value=[PersonDetection(bbox=(10, 10, 50, 100))])
 def test_no_hits_produces_no_segments(mock_detect, mock_bbox, mock_identify):
     """When no probe exceeds the confidence threshold, no shots are emitted."""
     from turkey_club.pipeline import _extract_shots_probe
@@ -141,7 +142,7 @@ def test_no_hits_produces_no_segments(mock_detect, mock_bbox, mock_identify):
 
 @patch("turkey_club.pipeline.identify_bowler_in_frame")
 @patch("turkey_club.pipeline.bbox_foot_in_polygon", return_value=True)
-@patch("turkey_club.pipeline.detect_persons", return_value=[{"bbox": [10, 10, 50, 100]}])
+@patch("turkey_club.pipeline.detect_persons", return_value=[PersonDetection(bbox=(10, 10, 50, 100))])
 def test_hit_on_first_probe_clips_start_to_zero(mock_detect, mock_bbox, mock_identify):
     """A HIT at frame 0 should clip the start_frame to 0 (not go negative)."""
     from turkey_club.pipeline import _extract_shots_probe
@@ -168,7 +169,7 @@ def test_hit_on_first_probe_clips_start_to_zero(mock_detect, mock_bbox, mock_ide
 
 @patch("turkey_club.pipeline.identify_bowler_in_frame")
 @patch("turkey_club.pipeline.bbox_foot_in_polygon", return_value=True)
-@patch("turkey_club.pipeline.detect_persons", return_value=[{"bbox": [10, 10, 50, 100]}])
+@patch("turkey_club.pipeline.detect_persons", return_value=[PersonDetection(bbox=(10, 10, 50, 100))])
 def test_correct_lane_tracked_on_hit(mock_detect, mock_bbox, mock_identify):
     """The ShotSegment should carry the lane name where the HIT occurred."""
     from turkey_club.pipeline import _extract_shots_probe

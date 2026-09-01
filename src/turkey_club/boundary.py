@@ -8,11 +8,7 @@ import numpy as np
 
 from turkey_club.config import LaneCalibration, SegmentationParameters
 from turkey_club.detect import bbox_foot_in_polygon, detect_persons, pin_zone_motion
-from turkey_club.identify import (
-    BowlerTarget,
-    crop_upper_back,
-    identify_bowler_in_frame,
-)
+from turkey_club.identify import BowlerTarget, identify_bowler_in_frame
 from turkey_club.segment import ShotSegment, _find_settle
 
 
@@ -260,10 +256,13 @@ def _bowler_in_approach(
         device=device,
     )
 
-    for bbox in persons:
-        if not bbox_foot_in_polygon(bbox, lane.approach_zone):
+    for detection in persons:
+        if not bbox_foot_in_polygon(detection.bbox, lane.approach_zone):
             continue
-        confidence = identify_bowler_in_frame(frame, bbox, target, use_ocr=False)
+        confidence = identify_bowler_in_frame(
+            frame, detection.bbox, target,
+            use_ocr=False, keypoints=detection.keypoints,
+        )
         if confidence >= params.bowler_confidence_threshold:
             return True
 

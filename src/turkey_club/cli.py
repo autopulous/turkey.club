@@ -300,5 +300,99 @@ def detect_format(
         typer.echo("Format: inconclusive (no bowler activity detected in prefix)")
 
 
+@app.command("debug-clustering")
+def debug_clustering(
+    video: str = typer.Option(
+        ...,
+        help="Local video path OR a remote URL (YouTube, direct MP4, any yt-dlp-supported source).",
+    ),
+    bowler_target: Path = typer.Option(
+        ...,
+        "--bowler-target",
+        exists=True,
+        help="BowlerTarget JSON (built ahead of time with sampled shirt colors).",
+    ),
+    calibration: Path = typer.Option(..., exists=True, help="Venue calibration JSON from `calibrate`."),
+    out: Path = typer.Option(..., help="Working directory for census cache and debug output."),
+    format_preset: str = typer.Option(
+        "",
+        "--format",
+        help="Bowling format preset name (e.g. 'pba-qualifying'). Optional, used for display context.",
+    ),
+    downscale_factor: float = typer.Option(0.5, "--downscale-factor", help="Detection-time downscale."),
+    device: str = typer.Option("auto", "--device", help="Detection device: 'auto', 'cpu', or 'cuda'."),
+    cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
+) -> None:
+    """Replay Stages 1-4 with an interactive side-by-side visualization of each clustering comparison."""
+    from turkey_club.census import load_census_records, run_census
+    from turkey_club.config import BowlerTarget as BowlerTargetConfig
+    from turkey_club.config import LaneCalibration, SegmentationParameters, VenueCalibration
+    from turkey_club.debug_clustering import replay_clustering, run_debug_viewer
+    from turkey_club.downscale import ensure_downscaled_video
+    from turkey_club.source import resolve_source
+
+    video_path = resolve_source(video, cache_dir=cache_dir)
+    typer.echo(f"Using video: {video_path}")
+
+    venue = VenueCalibration.load(calibration)
+    target_obj = BowlerTargetConfig.load(bowler_target)
+    params = SegmentationParameters()
+
+    detect_video = ensure_downscaled_video(video_path, scale_factor=downscale_factor)
+    scale = downscale_factor if detect_video != video_path else 1.0
+    typer.echo(f"detection: {detect_video.name}")
+
+    actual_device = device
+    if device == "auto":
+        try:
+            import torch
+            actual_device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            actual_device = "cpu"
+    typer.echo(f"device={actual_device}")
+
+    census_dir = out / "_census"
+    if list(census_dir.glob("*.json")):
+        typer.echo(f"Loading cached census from {census_dir}")
+        records = load_census_records(census_dir)
+    else:
+        typer.echo("Running Stage 1: Sparse frame census ...")
+
+        def _scale_poly(poly: list[tuple[int, int]]) -> list[tuple[int, int]]:
+            return [(int(x * scale), int(y * scale)) for x, y in poly]
+
+        scaled_venue = VenueCalibration(
+            lanes=[
+                LaneCalibration(
+                    name=lane.name,
+                    approach_zone=_scale_poly(lane.approach_zone),
+                    lane_zone=_scale_poly(lane.lane_zone),
+                    pin_zone=_scale_poly(lane.pin_zone),
+                )
+                for lane in venue.lanes
+            ],
+            frame_width=int(venue.frame_width * scale),
+            frame_height=int(venue.frame_height * scale),
+        )
+        records = run_census(
+            video_path=detect_video,
+            venue=scaled_venue,
+            output_dir=census_dir,
+            interval_seconds=10.0,
+            device=actual_device,
+        )
+    typer.echo(f"Census: {len(records)} frames with persons")
+
+    if not records:
+        typer.echo("No persons detected — nothing to visualize.")
+        raise typer.Exit()
+
+    typer.echo("Replaying clustering (Stages 2-3) ...")
+    steps = replay_clustering(records, params, target_obj)
+    typer.echo(f"Recorded {len(steps)} comparison steps. Opening viewer ...")
+
+    run_debug_viewer(steps, census_dir, target_obj)
+
+
 if __name__ == "__main__":
     app()

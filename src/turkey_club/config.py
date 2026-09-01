@@ -34,6 +34,17 @@ class VenueCalibration:
                 return lane
         raise KeyError(f"No lane named {name!r}. Known: {[lane.name for lane in self.lanes]}")
 
+    def bounds_rect(self) -> tuple[int, int, int, int]:
+        """Bounding rectangle (x_min, y_min, x_max, y_max) of all lane polygons"""
+        all_points: list[Point] = []
+        for lane_cal in self.lanes:
+            all_points.extend(lane_cal.approach_zone)
+            all_points.extend(lane_cal.lane_zone)
+            all_points.extend(lane_cal.pin_zone)
+        xs = [p[0] for p in all_points]
+        ys = [p[1] for p in all_points]
+        return (min(xs), min(ys), max(xs), max(ys))
+
     @classmethod
     def load(cls, path: Path) -> "VenueCalibration":
         data = json.loads(Path(path).read_text())
@@ -59,15 +70,22 @@ class BowlerTarget:
 
     name: str
     shirt_color_samples: list[tuple[int, int, int]] = field(default_factory=list)
+    reference_histogram: list[float] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path) -> "BowlerTarget":
         data = json.loads(Path(path).read_text())
         data["shirt_color_samples"] = [tuple(s) for s in data.get("shirt_color_samples", [])]
+        data.setdefault("reference_histogram", [])
         return cls(**data)
 
     def save(self, path: Path) -> None:
-        Path(path).write_text(json.dumps(asdict(self), indent=2))
+        data = asdict(self)
+        if not data["reference_histogram"]:
+            del data["reference_histogram"]
+        if not data["shirt_color_samples"]:
+            del data["shirt_color_samples"]
+        Path(path).write_text(json.dumps(data, indent=2))
 
 
 @dataclass
@@ -138,20 +156,27 @@ class CensusPersonRecord:
     bbox: tuple[int, int, int, int]
     lane_name: str
     histogram: list[float] = field(default_factory=list)
+    keypoints: list[tuple[float, float, float]] | None = None
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "bbox": list(self.bbox),
             "lane_name": self.lane_name,
             "histogram": self.histogram,
         }
+        if self.keypoints is not None:
+            result["keypoints"] = [list(kp) for kp in self.keypoints]
+        return result
 
     @classmethod
     def from_dict(cls, data: dict) -> CensusPersonRecord:
+        raw_kp = data.get("keypoints")
+        keypoints = [tuple(kp) for kp in raw_kp] if raw_kp is not None else None
         return cls(
             bbox=tuple(data["bbox"]),
             lane_name=data["lane_name"],
             histogram=data.get("histogram", []),
+            keypoints=keypoints,
         )
 
 

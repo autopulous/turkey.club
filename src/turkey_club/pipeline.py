@@ -26,7 +26,7 @@ from turkey_club.config import (
     SegmentationParameters,
     VenueCalibration,
 )
-from turkey_club.detect import bbox_foot_in_polygon, detect_device, detect_persons, frame_has_motion, pin_zone_motion
+from turkey_club.detect import PersonDetection, bbox_foot_in_polygon, detect_device, detect_persons, frame_has_motion, pin_zone_motion
 from turkey_club.downscale import ensure_downscaled_video
 from turkey_club.export import export_clip
 from turkey_club.identify import identify_bowler_in_frame
@@ -97,10 +97,13 @@ def scan_prefix(
             for lane in scaled_lanes:
                 if lane.name in active_lanes:
                     continue
-                for person in persons:
-                    if not bbox_foot_in_polygon(person, lane.approach_zone):
+                for detection in persons:
+                    if not bbox_foot_in_polygon(detection.bbox, lane.approach_zone):
                         continue
-                    confidence = identify_bowler_in_frame(frame, person, target, use_ocr=False)
+                    confidence = identify_bowler_in_frame(
+                        frame, detection.bbox, target,
+                        use_ocr=False, keypoints=detection.keypoints,
+                    )
                     if confidence >= bowler_thresh:
                         active_lanes.add(lane.name)
                         print(f"  prefix-scan probe #{probes} @ frame {frame_index}: bowler on {lane.name!r}", flush=True)
@@ -329,10 +332,13 @@ def _extract_shots_probe(
         hit_lane_name: str | None = None
         hit_confidence: float = 0.0
         for lane in candidate_lanes:
-            for person in persons:
-                if not bbox_foot_in_polygon(person, lane.approach_zone):
+            for detection in persons:
+                if not bbox_foot_in_polygon(detection.bbox, lane.approach_zone):
                     continue
-                confidence = identify_bowler_in_frame(frame, person, target, use_ocr=False)
+                confidence = identify_bowler_in_frame(
+                    frame, detection.bbox, target,
+                    use_ocr=False, keypoints=detection.keypoints,
+                )
                 if confidence >= bowler_thresh:
                     hit_lane_name = lane.name
                     hit_confidence = confidence
@@ -437,19 +443,23 @@ def _update_lane_signals(
     lanes: list[LaneCalibration],
     frame: np.ndarray,
     previous_frame: np.ndarray | None,
-    persons: list[tuple[int, int, int, int]],
+    persons: list[PersonDetection],
     target: BowlerTarget,
 ) -> None:
     """Append one frame's worth of signals to each lane's accumulator."""
     for state, lane in zip(states, lanes):
-        persons_in_zone = [p for p in persons if bbox_foot_in_polygon(p, lane.approach_zone)]
+        persons_in_zone = [p for p in persons if bbox_foot_in_polygon(p.bbox, lane.approach_zone)]
         best_confidence = 0.0
         best_centroid: tuple[float, float] | None = None
         for person in persons_in_zone:
-            confidence = identify_bowler_in_frame(frame, person, target, use_ocr=False)
+            confidence = identify_bowler_in_frame(
+                frame, person.bbox, target,
+                use_ocr=False, keypoints=person.keypoints,
+            )
             if confidence > best_confidence:
                 best_confidence = confidence
-                best_centroid = ((person[0] + person[2]) / 2.0, (person[1] + person[3]) / 2.0)
+                x1, y1, x2, y2 = person.bbox
+                best_centroid = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
         state.bowler_confidence.append(best_confidence)
 
         prev_centroid = state.previous_bowler_centroid
