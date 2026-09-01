@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import click
+import cv2
 import typer
 import typer.core
 
@@ -70,37 +71,90 @@ def main(ctx: typer.Context) -> None:
 
 @app.command()
 def calibrate(
-    frame: list[Path] = typer.Option(
-        ...,
-        "--frame",
-        exists=True,
-        help=(
-            "Still image. Pass once to broadcast to every lane, or once per --lane "
-            "(paired with --lane by order, so you can use a different reference image per lane)."
-        ),
+    video: str | None = typer.Option(
+        None,
+        help="Local video path OR a remote URL (YouTube, direct MP4, any yt-dlp-supported source).",
     ),
-    out: Path = typer.Option(..., help="Output path for the venue calibration JSON."),
+    out: Path | None = typer.Option(None, help="Output path for the venue calibration JSON. Defaults to <video-dir>/<video-stem>/venue.json."),
     lane: list[str] = typer.Option(
         ["left", "right"],
         "--lane",
         help="Lane name to calibrate. Pass multiple times for multiple lanes (order = calibration order).",
     ),
+    frame: str | None = typer.Option(
+        None,
+        "--frame",
+        help="Starting frame number for the picker. Opens at the beginning of the video when omitted.",
+    ),
+    cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
 ) -> None:
     """Interactively mark approach, lane, and pin zones for each lane on a still frame."""
     from turkey_club.calibrate import run_interactive_calibration
+    from turkey_club.source import resolve_source
 
-    if len(frame) == 1:
-        frames = list(frame) * len(lane)
-    elif len(frame) == len(lane):
-        frames = list(frame)
-    else:
+    initial_frame = 0
+    if frame is not None:
+        try:
+            initial_frame = int(frame)
+        except ValueError:
+            if video is None:
+                typer.echo(
+                    f"--frame now accepts a frame number, not an image path.\n\n"
+                    "Pass the video with --video and the picker will open for "
+                    "frame selection:\n\n"
+                    "  turkey-club calibrate --video <video> --out <venue.json>",
+                    err=True,
+                )
+                raise typer.Exit(code=2)
+            typer.echo(
+                f"Invalid --frame value: {frame}\n\n"
+                "--frame accepts a frame number (integer) to set the picker's "
+                "starting position.",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+    if video is None:
         typer.echo(
-            f"Mismatch: got {len(frame)} --frame and {len(lane)} --lane. "
-            "Pass either one --frame (broadcast to all lanes) or exactly one --frame per --lane.",
+            "Missing required option: --video\n\n"
+            "  turkey-club calibrate --video <video> --out <venue.json>",
             err=True,
         )
         raise typer.Exit(code=2)
 
+    video_path = Path(resolve_source(video, cache_dir=cache_dir))
+    typer.echo(f"Using video: {video_path}")
+
+    if out is None:
+        data_dir = video_path.parent / video_path.stem
+        data_dir.mkdir(parents=True, exist_ok=True)
+        out = data_dir / "venue.json"
+
+    from turkey_club.pick_frame import pick_video_frame
+
+    typer.echo("Opening frame picker — navigate to a frame where both lanes are visible.")
+    selected_frame = pick_video_frame(video_path, initial_frame=initial_frame)
+    if selected_frame is None:
+        typer.echo("Frame selection canceled.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Selected frame {selected_frame}")
+
+    data_dir = video_path.parent / video_path.stem
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video_path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, selected_frame)
+    ret, img = cap.read()
+    cap.release()
+    if not ret:
+        typer.echo(f"Could not read frame {selected_frame} from {video_path}", err=True)
+        raise typer.Exit(code=2)
+
+    frame_path = data_dir / "calibration_frame.jpg"
+    cv2.imwrite(str(frame_path), img)
+    typer.echo(f"Saved calibration frame: {frame_path}")
+
+    frames = [frame_path] * len(lane)
     run_interactive_calibration(frames, out, lane_names=lane)
 
 
@@ -113,10 +167,9 @@ def extract(
     bowler_target: Path = typer.Option(
         ...,
         "--bowler-target",
-        exists=True,
         help="BowlerTarget JSON (built ahead of time with sampled shirt colors).",
     ),
-    calibration: Path = typer.Option(..., exists=True, help="Venue calibration JSON from `calibrate`."),
+    calibration: Path = typer.Option(..., help="Venue calibration JSON from `calibrate`."),
     out: Path = typer.Option(..., help="Output directory for per-shot clips."),
     format: str | None = typer.Option(
         None,
@@ -145,6 +198,27 @@ def extract(
     from turkey_club.formats import PRESETS, FormatPreset
     from turkey_club.pipeline import extract_shots
     from turkey_club.source import resolve_source
+
+    if not calibration.exists():
+        typer.echo(
+            f"Venue calibration not found: {calibration}\n\n"
+            "The calibration file defines approach, lane, and pin zones for each lane. "
+            "Create one with:\n\n"
+            f"  turkey-club calibrate --frame <still-image> --out \"{calibration}\"",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if not bowler_target.exists():
+        video_dir = calibration.parent
+        typer.echo(
+            f"Bowler target not found: {bowler_target}\n\n"
+            "The bowler target file identifies the bowler by shirt color histogram. "
+            "Create one with:\n\n"
+            f"  turkey-club build-bowler --video \"{video}\"",
+            err=True,
+        )
+        raise typer.Exit(code=2)
 
     preset: FormatPreset | None = None
     if format is not None:

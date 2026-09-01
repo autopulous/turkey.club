@@ -74,6 +74,7 @@ def pick_reference_frame(
     video_path: Path,
     venue: VenueCalibration,
     initial_name: str = "",
+    initial_frame: int = 0,
 ) -> tuple[int, str] | None:
     """Open an interactive viewer to select a reference frame and enter a bowler name.
 
@@ -88,7 +89,7 @@ def pick_reference_frame(
     video_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     video_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    current_frame = 0
+    current_frame = max(0, min(initial_frame, total_frames - 1))
     bowler_name = initial_name
     frame_input = ""
     time_input = ""
@@ -209,6 +210,137 @@ def pick_reference_frame(
     return (current_frame, bowler_name) if selected else None
 
 
+_FIELD_VF_FRAME = 0
+_FIELD_VF_TIME = 1
+_FIELD_VF_COUNT = 2
+
+
+def pick_video_frame(video_path: Path, initial_frame: int = 0) -> int | None:
+    """Open an interactive viewer to select a video frame.
+
+    Simplified variant of ``pick_reference_frame`` without venue overlays or
+    bowler name input.  Returns the selected frame number, or ``None`` if the
+    user canceled.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video: {video_path}")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    video_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    video_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    current_frame = max(0, min(initial_frame, total_frames - 1))
+    frame_input = ""
+    time_input = ""
+    active_field = _FIELD_VF_FRAME
+    cursor_visible = True
+    last_cursor_toggle = time.monotonic()
+
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+
+    initial_canvas_w = 1600
+    initial_canvas_h = 900
+    cv2.resizeWindow(WINDOW_NAME, initial_canvas_w, initial_canvas_h)
+
+    def on_trackbar(pos: int) -> None:
+        nonlocal current_frame
+        current_frame = pos
+
+    cv2.createTrackbar("Frame", WINDOW_NAME, current_frame, max(total_frames - 1, 0), on_trackbar)
+
+    selected = False
+
+    while True:
+        canvas_w, canvas_h = _get_window_size(initial_canvas_w, initial_canvas_h)
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
+        ret, frame = cap.read()
+        if not ret:
+            current_frame = min(current_frame, total_frames - 1)
+            continue
+
+        now = time.monotonic()
+        if now - last_cursor_toggle > 0.5:
+            cursor_visible = not cursor_visible
+            last_cursor_toggle = now
+
+        canvas = _compose_canvas_simple(
+            frame, canvas_w, canvas_h, video_w, video_h,
+            current_frame, total_frames, fps,
+            frame_input, time_input,
+            active_field, cursor_visible,
+        )
+
+        cv2.imshow(WINDOW_NAME, canvas)
+        cv2.setTrackbarPos("Frame", WINDOW_NAME, current_frame)
+
+        key = cv2.waitKeyEx(30)
+
+        if key == KEY_ESCAPE:
+            break
+        elif key == KEY_TAB:
+            active_field = (active_field + 1) % _FIELD_VF_COUNT
+            cursor_visible = True
+            last_cursor_toggle = now
+        elif key == KEY_ENTER:
+            if active_field == _FIELD_VF_FRAME and frame_input.strip():
+                target = _parse_frame_number(frame_input, total_frames)
+                if target is not None:
+                    current_frame = target
+                    frame_input = ""
+            elif active_field == _FIELD_VF_TIME and time_input.strip():
+                seconds = _parse_time_to_seconds(time_input)
+                if seconds is not None:
+                    target = int(seconds * fps)
+                    current_frame = max(0, min(target, total_frames - 1))
+                    time_input = ""
+            else:
+                selected = True
+                break
+        elif key == KEY_RIGHT:
+            current_frame = min(current_frame + 1, total_frames - 1)
+        elif key == KEY_LEFT:
+            current_frame = max(current_frame - 1, 0)
+        elif key == KEY_PAGE_UP:
+            current_frame = min(current_frame + int(fps), total_frames - 1)
+        elif key == KEY_PAGE_DOWN:
+            current_frame = max(current_frame - int(fps), 0)
+        elif key == KEY_HOME:
+            current_frame = 0
+        elif key == KEY_END:
+            current_frame = total_frames - 1
+        elif key == KEY_BACKSPACE:
+            if active_field == _FIELD_VF_FRAME:
+                frame_input = frame_input[:-1]
+            elif active_field == _FIELD_VF_TIME:
+                time_input = time_input[:-1]
+            cursor_visible = True
+            last_cursor_toggle = now
+        elif key == KEY_DELETE:
+            if active_field == _FIELD_VF_FRAME:
+                frame_input = ""
+            elif active_field == _FIELD_VF_TIME:
+                time_input = ""
+            cursor_visible = True
+            last_cursor_toggle = now
+        elif 32 <= key <= 126:
+            ch = chr(key)
+            if active_field == _FIELD_VF_FRAME:
+                if ch.isdigit():
+                    frame_input += ch
+            elif active_field == _FIELD_VF_TIME:
+                if ch.isdigit() or ch in (":", "."):
+                    time_input += ch
+            cursor_visible = True
+            last_cursor_toggle = now
+
+    cap.release()
+    cv2.destroyWindow(WINDOW_NAME)
+    return current_frame if selected else None
+
+
 def _parse_frame_number(text: str, total_frames: int) -> int | None:
     text = text.strip()
     if not text:
@@ -275,6 +407,128 @@ def _compose_canvas(
                 active_field, cursor_visible)
 
     return canvas
+
+
+def _compose_canvas_simple(
+    frame: np.ndarray,
+    canvas_w: int,
+    canvas_h: int,
+    video_w: int,
+    video_h: int,
+    current_frame: int,
+    total_frames: int,
+    fps: float,
+    frame_input: str,
+    time_input: str,
+    active_field: int,
+    cursor_visible: bool,
+) -> np.ndarray:
+    canvas = np.full((canvas_h, canvas_w, 3), BG_COLOR, dtype=np.uint8)
+
+    panel_w = max(PANEL_MIN_PX, int(canvas_w * PANEL_RATIO))
+    view_w = canvas_w - panel_w
+    view_h = canvas_h
+
+    scale = min(view_w / max(video_w, 1), view_h / max(video_h, 1))
+    scaled_w = int(video_w * scale)
+    scaled_h = int(video_h * scale)
+
+    x_off = (view_w - scaled_w) // 2
+    y_off = (view_h - scaled_h) // 2
+
+    scaled = cv2.resize(frame, (scaled_w, scaled_h), interpolation=cv2.INTER_AREA)
+    canvas[y_off:y_off + scaled_h, x_off:x_off + scaled_w] = scaled
+
+    panel_x = view_w
+    cv2.rectangle(canvas, (panel_x, 0), (canvas_w, canvas_h), PANEL_BG, -1)
+    cv2.line(canvas, (panel_x, 0), (panel_x, canvas_h), (70, 70, 70), 1)
+
+    _draw_panel_simple(canvas, panel_x, panel_w, canvas_h,
+                       current_frame, total_frames, fps,
+                       frame_input, time_input,
+                       active_field, cursor_visible)
+
+    return canvas
+
+
+def _draw_panel_simple(
+    canvas: np.ndarray,
+    panel_x: int,
+    panel_w: int,
+    panel_h: int,
+    current_frame: int,
+    total_frames: int,
+    fps: float,
+    frame_input: str,
+    time_input: str,
+    active_field: int,
+    cursor_visible: bool,
+) -> None:
+    margin = 20
+    x = panel_x + margin
+    x2 = panel_x + panel_w - margin
+    y = 40
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = _fit_font_scale(panel_w - margin * 2, panel_w)
+    line_h = int(30 * font_scale / 0.55)
+    small_scale = font_scale * 0.75
+
+    _put_text(canvas, "FRAME PICKER", x, y, font, font_scale, ACCENT_COLOR, 2)
+    y += line_h + 10
+
+    cv2.line(canvas, (x, y), (x2, y), (70, 70, 70), 1)
+    y += 20
+
+    time_seconds = current_frame / fps if fps > 0 else 0
+    minutes = int(time_seconds // 60)
+    seconds = time_seconds % 60
+
+    _put_text(canvas, "Frame", x, y, font, small_scale, DIM_COLOR)
+    y += int(line_h * 0.8)
+    _put_text(canvas, f"{current_frame} / {total_frames - 1}", x, y, font, font_scale, TEXT_COLOR)
+    y += line_h + 5
+
+    _put_text(canvas, "Time", x, y, font, small_scale, DIM_COLOR)
+    y += int(line_h * 0.8)
+    _put_text(canvas, f"{minutes}:{seconds:05.2f}", x, y, font, font_scale, TEXT_COLOR)
+    y += line_h + 20
+
+    cv2.line(canvas, (x, y), (x2, y), (70, 70, 70), 1)
+    y += 20
+
+    _put_text(canvas, "Go to Frame  [Tab to switch]", x, y, font, small_scale, DIM_COLOR)
+    y += int(line_h * 0.8)
+    _draw_input_field(canvas, frame_input, x, y, x2, line_h,
+                      active_field == _FIELD_VF_FRAME, cursor_visible)
+    y += line_h + 15
+
+    _put_text(canvas, "Go to Time  (sec or m:ss)", x, y, font, small_scale, DIM_COLOR)
+    y += int(line_h * 0.8)
+    _draw_input_field(canvas, time_input, x, y, x2, line_h,
+                      active_field == _FIELD_VF_TIME, cursor_visible)
+    y += line_h + 25
+
+    cv2.line(canvas, (x, y), (x2, y), (70, 70, 70), 1)
+    y += 20
+
+    _put_text(canvas, "Controls", x, y, font, small_scale, DIM_COLOR)
+    y += int(line_h * 0.9)
+
+    controls = [
+        ("Tab", "cycle input fields"),
+        ("Enter", "jump (frame/time) or select"),
+        ("Left / Right", "+/- 1 frame"),
+        ("PgUp / PgDn", "fwd / back 1 sec"),
+        ("Home / End", "first / last"),
+        ("Esc", "cancel"),
+    ]
+
+    for label, desc in controls:
+        _put_text(canvas, label, x, y, font, small_scale, ACCENT_COLOR)
+        y += int(line_h * 0.7)
+        _put_text(canvas, desc, x + 10, y, font, small_scale * 0.9, DIM_COLOR)
+        y += int(line_h * 0.8)
 
 
 def _draw_input_field(
