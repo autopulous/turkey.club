@@ -69,6 +69,8 @@ class BowlerTarget:
     """Identity of the bowler whose shots we want to extract."""
 
     name: str
+    source_image_paths: list[str] = field(default_factory=list)
+    source_frame_numbers: list[int] = field(default_factory=list)
     shirt_color_samples: list[tuple[int, int, int]] = field(default_factory=list)
     reference_histogram: list[float] = field(default_factory=list)
 
@@ -77,6 +79,8 @@ class BowlerTarget:
         data = json.loads(Path(path).read_text())
         data["shirt_color_samples"] = [tuple(s) for s in data.get("shirt_color_samples", [])]
         data.setdefault("reference_histogram", [])
+        data.setdefault("source_frame_numbers", [])
+        data.setdefault("source_image_paths", [])
         return cls(**data)
 
     def save(self, path: Path) -> None:
@@ -85,6 +89,10 @@ class BowlerTarget:
             del data["reference_histogram"]
         if not data["shirt_color_samples"]:
             del data["shirt_color_samples"]
+        if not data["source_frame_numbers"]:
+            del data["source_frame_numbers"]
+        if not data["source_image_paths"]:
+            del data["source_image_paths"]
         Path(path).write_text(json.dumps(data, indent=2))
 
 

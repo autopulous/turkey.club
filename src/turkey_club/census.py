@@ -90,7 +90,7 @@ def run_census(
 
         census_persons: list[CensusPersonRecord] = []
         for detection in detections:
-            if not _shoulders_visible(detection.keypoints, MIN_SHOULDER_CONFIDENCE):
+            if not shoulders_visible(detection.keypoints, MIN_SHOULDER_CONFIDENCE):
                 continue
 
             lane = _find_approach_lane(detection.bbox, venue.lanes)
@@ -154,7 +154,7 @@ def load_census_records(output_dir: Path) -> list[CensusRecord]:
     return records
 
 
-def _shoulders_visible(
+def shoulders_visible(
     keypoints: list[tuple[float, float, float]] | None,
     min_confidence: float,
 ) -> bool:

@@ -29,7 +29,7 @@ from turkey_club.identify import (
     UPPER_BACK_BOTTOM_FRACTION,
     UPPER_BACK_TOP_FRACTION,
     histogram_distance,
-    samples_to_normalized_histogram,
+    resolve_reference_histogram,
 )
 
 WINDOW_NAME = "turkey-club clustering debug"
@@ -59,13 +59,9 @@ class ClusteringStep:
 
 def _resolve_reference_histogram(target: BowlerTarget) -> np.ndarray:
     """Return the reference histogram from the target, preferring reference_histogram."""
-    if target.reference_histogram:
-        arr = np.array(target.reference_histogram, dtype=np.float32)
-        expected = HSV_HISTOGRAM_BINS[0] * HSV_HISTOGRAM_BINS[1] * HSV_HISTOGRAM_BINS[2]
-        if arr.size == expected:
-            return arr.reshape(HSV_HISTOGRAM_BINS)
-    if target.shirt_color_samples:
-        return samples_to_normalized_histogram(tuple(target.shirt_color_samples))
+    hist = resolve_reference_histogram(target)
+    if hist is not None:
+        return hist
     return np.zeros(HSV_HISTOGRAM_BINS, dtype=np.float32)
 
 

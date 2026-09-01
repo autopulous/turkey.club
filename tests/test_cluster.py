@@ -111,6 +111,28 @@ def test_recovery_pass_assigns_uncertain():
     assert total_after >= total_before
 
 
+def test_identify_target_cluster_with_reference_histogram():
+    """Target identification works with reference_histogram (no shirt_color_samples)."""
+    bowler_a = _make_person("left", histogram_seed=1)
+    bowler_b = _make_person("right", histogram_seed=999)
+
+    records = [
+        CensusRecord(frame_number=0, persons=[bowler_a, bowler_b]),
+        CensusRecord(frame_number=300, persons=[_make_similar_person(bowler_a), _make_similar_person(bowler_b)]),
+    ]
+    params = SegmentationParameters()
+    clusters, _ = cluster_bowlers(records, params)
+
+    reference_histogram = list(bowler_a.histogram)
+
+    target = BowlerTarget(name="test", reference_histogram=reference_histogram)
+    assert not target.shirt_color_samples
+
+    best_cluster, margin = identify_target_cluster(clusters, target)
+    assert best_cluster is not None
+    assert margin > 0.0
+
+
 def test_empty_records_produces_no_clusters():
     """No records should produce no clusters."""
     params = SegmentationParameters()

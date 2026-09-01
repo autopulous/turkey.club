@@ -274,6 +274,22 @@ def compute_crop_histogram(crop: np.ndarray) -> np.ndarray:
     return hist
 
 
+def resolve_reference_histogram(target: BowlerTarget) -> np.ndarray | None:
+    """Return the shaped HSV histogram from whichever source is available on a BowlerTarget.
+
+    Prefers ``reference_histogram``; falls back to ``shirt_color_samples``.
+    Returns ``None`` when neither is populated.
+    """
+    if target.reference_histogram:
+        arr = np.array(target.reference_histogram, dtype=np.float32)
+        expected = HSV_HISTOGRAM_BINS[0] * HSV_HISTOGRAM_BINS[1] * HSV_HISTOGRAM_BINS[2]
+        if arr.size == expected:
+            return arr.reshape(HSV_HISTOGRAM_BINS)
+    if target.shirt_color_samples:
+        return samples_to_normalized_histogram(tuple(target.shirt_color_samples))
+    return None
+
+
 def histogram_distance(hist_a: np.ndarray, hist_b: np.ndarray) -> float:
     """Bhattacharyya distance between two normalized HSV histograms. Lower = more similar."""
 
@@ -323,3 +339,101 @@ def build_bowler_target_from_references(
         reference_histogram = avg.flatten().tolist()
 
     return BowlerTarget(name=name, reference_histogram=reference_histogram)
+
+
+def _embed_frame_number_exif(image_path: Path, frame_number: int) -> None:
+    """Write the video frame number into the JPEG's EXIF ImageDescription tag."""
+    from PIL import Image
+    from PIL.ExifTags import Base as ExifBase
+
+    img = Image.open(image_path)
+    exif = img.getexif()
+    exif[ExifBase.ImageDescription] = f"frame={frame_number}"
+    img.save(image_path, exif=exif)
+
+
+def build_bowler_target_from_video_frame(
+    name: str,
+    video_path: Path,
+    frame_number: int,
+    venue: VenueCalibration,
+    lane_name: str | None = None,
+    output_dir: Path | None = None,
+) -> BowlerTarget:
+    """Build a BowlerTarget from a single video frame.
+
+    Extracts the specified frame, detects the bowler in an approach zone, and
+    runs the same crop + preprocess + histogram pipeline used by the census.
+    When ``lane_name`` is ``None``, all approach zones are searched and the
+    lane is auto-detected; when multiple back-facing persons are found across
+    lanes, a ``RuntimeError`` asks the caller to specify ``--lane``.
+    Optionally saves the venue-cropped frame alongside the output for visual
+    inspection.
+    """
+    from turkey_club.boundary import read_frame
+    from turkey_club.census import MIN_SHOULDER_CONFIDENCE, shoulders_visible
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        frame = read_frame(cap, frame_number)
+    finally:
+        cap.release()
+
+    if frame is None:
+        raise RuntimeError(
+            f"Could not read frame {frame_number} from {video_path}"
+        )
+
+    detections = detect_persons(frame, confidence_threshold=0.4, min_height_pixels=80)
+
+    lanes_to_check = [venue.lane(lane_name)] if lane_name else venue.lanes
+    candidates: list[tuple] = []
+    for lane in lanes_to_check:
+        for d in detections:
+            if (bbox_foot_in_polygon(d.bbox, lane.approach_zone)
+                    and shoulders_visible(d.keypoints, MIN_SHOULDER_CONFIDENCE)):
+                candidates.append((d, lane.name))
+
+    if not candidates:
+        zone_desc = f"lane {lane_name!r}" if lane_name else "any lane"
+        raise RuntimeError(
+            f"No back-facing person detected in {zone_desc} approach zone "
+            f"at frame {frame_number}. Try a nearby frame where the bowler is "
+            f"clearly standing on the approach with their back to the camera."
+        )
+
+    if len(candidates) > 1 and lane_name is None:
+        lanes_found = sorted({ln for _, ln in candidates})
+        raise RuntimeError(
+            f"Multiple back-facing persons detected in approach zones "
+            f"({', '.join(lanes_found)}) at frame {frame_number}. "
+            f"Specify --lane to disambiguate."
+        )
+
+    bowler, detected_lane = candidates[0]
+    crop = crop_back_from_keypoints(frame, bowler.bbox, bowler.keypoints)
+    if 0 == crop.size:
+        raise RuntimeError(
+            f"Back crop was empty for detection at frame {frame_number}. "
+            f"Try a frame where the bowler's shoulders are more visible."
+        )
+
+    hist = compute_crop_histogram(crop)
+    reference_histogram = hist.flatten().tolist()
+
+    preprocessed = preprocess_for_histogram(crop)
+
+    source_image_paths: list[str] = []
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        image_path = output_dir / "bowler.jpg"
+        cv2.imwrite(str(image_path), preprocessed)
+        _embed_frame_number_exif(image_path, frame_number)
+        source_image_paths.append(str(image_path))
+
+    return BowlerTarget(
+        name=name,
+        reference_histogram=reference_histogram,
+        source_frame_numbers=[frame_number],
+        source_image_paths=source_image_paths,
+    )

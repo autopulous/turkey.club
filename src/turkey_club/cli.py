@@ -204,46 +204,86 @@ def fetch(
 
 @app.command("build-bowler")
 def build_bowler(
-    name: str = typer.Option(..., "--name", help="Bowler's jersey name (used for OCR matching during extraction)."),
-    calibration: Path = typer.Option(..., exists=True, help="Venue calibration JSON from `calibrate`."),
-    reference: list[str] = typer.Option(
+    name: str | None = typer.Option(None, "--name", help="Bowler's name. Entered in the GUI when omitted."),
+    video: str = typer.Option(
         ...,
-        "--reference",
-        help="Reference image paired with a lane: <image_path>=<lane_name>. Pass once per reference.",
+        help="Local video path OR a remote URL (YouTube, direct MP4, any yt-dlp-supported source).",
     ),
-    out: Path = typer.Option(..., help="Output path for the BowlerTarget JSON."),
-    samples_per_image: int = typer.Option(200, "--samples-per-image", help="Random shirt-color pixel samples to draw from each reference image."),
-    seed: int = typer.Option(0, "--seed", help="RNG seed for reproducible color sampling."),
+    frame: int | None = typer.Option(
+        None,
+        "--frame",
+        help="Frame number where the bowler is on the approach. Opens an interactive picker when omitted.",
+    ),
+    device: str = typer.Option("auto", "--device", help="Detection device: 'auto', 'cpu', or 'cuda'."),
+    cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
 ) -> None:
-    """Build a BowlerTarget JSON by sampling shirt colors from reference images."""
-    from turkey_club.config import VenueCalibration
-    from turkey_club.identify import build_bowler_target_from_references
+    """Build a BowlerTarget from a video frame where the bowler is on the approach.
 
-    refs: list[tuple[Path, str]] = []
-    for entry in reference:
-        if "=" not in entry:
+    All files live in a subdirectory named after the video (e.g. ``game1.mp4``
+    produces ``game1/venue.json``, ``game1/bowler.json``, ``game1/bowler.jpg``).
+    The subdirectory is created automatically.  ``venue.json`` is located there
+    first, falling back to the video's own directory for backward compatibility.
+    """
+    from turkey_club.config import VenueCalibration
+    from turkey_club.identify import build_bowler_target_from_video_frame
+    from turkey_club.source import resolve_source
+
+    if frame is not None and name is None:
+        typer.echo("--name is required when --frame is specified (no GUI to enter it).", err=True)
+        raise typer.Exit(code=2)
+
+    video_path = resolve_source(video, cache_dir=cache_dir)
+    typer.echo(f"Using video: {video_path}")
+
+    video_file = Path(video_path)
+    data_dir = video_file.parent / video_file.stem
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    calibration = data_dir / "venue.json"
+    if not calibration.exists():
+        fallback = video_file.parent / "venue.json"
+        if fallback.exists():
+            calibration = fallback
+        else:
             typer.echo(
-                f"Invalid --reference {entry!r}: expected <image_path>=<lane_name>",
+                f"No venue.json found in {data_dir} or {video_file.parent}. "
+                f"Run `calibrate` first.",
                 err=True,
             )
             raise typer.Exit(code=2)
-        img_str, lane_name = entry.rsplit("=", 1)
-        img_path = Path(img_str)
-        if not img_path.exists():
-            typer.echo(f"Reference image not found: {img_path}", err=True)
-            raise typer.Exit(code=2)
-        refs.append((img_path, lane_name))
 
     venue = VenueCalibration.load(calibration)
-    target = build_bowler_target_from_references(
+
+    if frame is None:
+        from turkey_club.pick_frame import pick_reference_frame
+
+        typer.echo("Opening frame picker — navigate to a frame where the bowler is on the approach.")
+        result = pick_reference_frame(video_path, venue, initial_name=name or "")
+        if result is None:
+            typer.echo("Frame selection canceled.", err=True)
+            raise typer.Exit(code=1)
+        frame, picker_name = result
+        if name is None:
+            name = picker_name
+        typer.echo(f"Selected frame {frame}")
+
+    if not name or not name.strip():
+        typer.echo("Bowler name is required. Provide --name or enter it in the picker.", err=True)
+        raise typer.Exit(code=2)
+    name = name.strip()
+
+    target = build_bowler_target_from_video_frame(
         name=name,
-        references=refs,
+        video_path=video_path,
+        frame_number=frame,
         venue=venue,
-        samples_per_image=samples_per_image,
-        rng_seed=seed,
+        output_dir=data_dir,
     )
+    out = data_dir / "bowler.json"
     target.save(out)
-    typer.echo(f"BowlerTarget saved to {out} ({len(target.shirt_color_samples)} color samples)")
+    typer.echo(f"BowlerTarget saved to {out}")
+    if target.source_image_paths:
+        typer.echo(f"Reference image saved to {target.source_image_paths[0]}")
 
 
 @app.command()

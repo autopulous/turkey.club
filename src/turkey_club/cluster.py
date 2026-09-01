@@ -11,7 +11,7 @@ from turkey_club.config import (
     ClusterAppearance,
     SegmentationParameters,
 )
-from turkey_club.identify import histogram_distance, samples_to_normalized_histogram
+from turkey_club.identify import histogram_distance, resolve_reference_histogram
 
 
 def cluster_bowlers(
@@ -145,10 +145,9 @@ def identify_target_cluster(
     between the best and second-best match — larger means more confident.
     Returns (None, 0.0) if no clusters exist.
     """
-    if not clusters or not target.shirt_color_samples:
+    reference_hist = resolve_reference_histogram(target)
+    if not clusters or reference_hist is None:
         return None, 0.0
-
-    reference_hist = samples_to_normalized_histogram(tuple(target.shirt_color_samples))
     distances: list[tuple[float, BowlerCluster]] = []
 
     for cluster in clusters:

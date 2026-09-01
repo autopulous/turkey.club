@@ -245,7 +245,7 @@ def _bowler_in_approach(
 ) -> bool:
     """Check whether the target bowler is in the approach zone at ``frame_number``."""
 
-    frame = _read_frame(cap, frame_number)
+    frame = read_frame(cap, frame_number)
     if frame is None:
         return False
 
@@ -331,8 +331,8 @@ def _read_pin_motion_at(
 ) -> float:
     """Read two consecutive frames and compute pin zone motion."""
 
-    prev_frame = _read_frame(cap, max(0, frame_number - 1))
-    curr_frame = _read_frame(cap, frame_number)
+    prev_frame = read_frame(cap, max(0, frame_number - 1))
+    curr_frame = read_frame(cap, frame_number)
     if prev_frame is None or curr_frame is None:
         return 0.0
     return pin_zone_motion(curr_frame, prev_frame, pin_polygon)
@@ -347,9 +347,9 @@ def _read_pin_motion_range(
     """Read pin zone motion values for a range of frames."""
 
     values = []
-    prev_frame = _read_frame(cap, max(0, start - 1))
+    prev_frame = read_frame(cap, max(0, start - 1))
     for frame_num in range(start, end):
-        curr_frame = _read_frame(cap, frame_num)
+        curr_frame = read_frame(cap, frame_num)
         if prev_frame is not None and curr_frame is not None:
             values.append(pin_zone_motion(curr_frame, prev_frame, pin_polygon))
         else:
@@ -376,7 +376,7 @@ def _find_settle_in_values(
     return None
 
 
-def _read_frame(cap: cv2.VideoCapture, frame_number: int) -> np.ndarray | None:
+def read_frame(cap: cv2.VideoCapture, frame_number: int) -> np.ndarray | None:
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
     ret, frame = cap.read()
     if not ret:
