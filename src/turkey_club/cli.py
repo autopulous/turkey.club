@@ -70,7 +70,7 @@ def extract(
             "Explicit --probe-interval and --bowler-lane still override the preset."
         ),
     ),
-    strategy: str = typer.Option("probe", "--strategy", help="Search strategy: 'probe' (sparse probes + range-expand) or 'linear' (every-frame scan)."),
+    strategy: str = typer.Option("probe", "--strategy", help="Search strategy: 'probe' (sparse probes + fixed clips), 'linear' (every-frame scan), or 'multipass' (census → cluster → rotation → binary-search boundaries)."),
     bowler_lane: str | None = typer.Option(None, "--bowler-lane", help="Restrict search to a single calibrated lane (e.g. for Baker format). Default: search all calibrated lanes."),
     probe_interval_seconds: float | None = typer.Option(None, "--probe-interval", help="Probe interval in seconds (probe strategy only). Default: 10.0, or the format preset's value."),
     merge: bool = typer.Option(True, "--merge/--no-merge", help="After exporting per-shot clips, concatenate them into <out>/all_shots.mp4. Use --no-merge to skip."),
@@ -162,6 +162,7 @@ def extract(
         motion_gate=motion_gate,
         motion_gate_threshold=motion_gate_threshold,
         device=device,
+        format_preset=preset,
     )
 
     if preset is not None and shot_count is not None:

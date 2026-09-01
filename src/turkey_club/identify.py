@@ -47,19 +47,19 @@ def identify_bowler_in_frame(
     ``use_ocr=False`` to skip the per-frame OCR (~600 ms) when the jersey font
     is known to defeat the recognizer.
     """
-    crop = _crop_upper_back(frame, person_bbox)
+    crop = crop_upper_back(frame, person_bbox)
     if crop.size == 0:
         return 0.0
     ocr_score = _ocr_match_confidence(crop, target.name) if use_ocr else 0.0
     color_score = (
-        _color_histogram_confidence(crop, target.shirt_color_samples)
+        color_histogram_confidence(crop, target.shirt_color_samples)
         if target.shirt_color_samples
         else 0.0
     )
     return max(ocr_score, color_score)
 
 
-def _crop_upper_back(frame: np.ndarray, bbox: PersonBBox) -> np.ndarray:
+def crop_upper_back(frame: np.ndarray, bbox: PersonBBox) -> np.ndarray:
     """Crop the upper-back region of ``bbox`` where the jersey name typically sits."""
     x1, y1, x2, y2 = bbox
     height = y2 - y1
@@ -115,7 +115,7 @@ def _ocr_match_confidence(crop: np.ndarray, target_name: str) -> float:
 
 
 @lru_cache(maxsize=8)
-def _samples_to_normalized_histogram(samples_key: tuple[tuple[int, int, int], ...]) -> np.ndarray:
+def samples_to_normalized_histogram(samples_key: tuple[tuple[int, int, int], ...]) -> np.ndarray:
     samples_bgr = np.array(samples_key, dtype=np.uint8).reshape(-1, 1, 3)
     samples_hsv = cv2.cvtColor(samples_bgr, cv2.COLOR_BGR2HSV).reshape(-1, 1, 3)
     hist = cv2.calcHist([samples_hsv], [0, 1, 2], None, list(HSV_HISTOGRAM_BINS), HSV_HISTOGRAM_RANGES)
@@ -123,20 +123,37 @@ def _samples_to_normalized_histogram(samples_key: tuple[tuple[int, int, int], ..
     return hist
 
 
-def _color_histogram_confidence(crop: np.ndarray, samples: Sequence[tuple[int, int, int]]) -> float:
+def color_histogram_confidence(crop: np.ndarray, samples: Sequence[tuple[int, int, int]]) -> float:
     """Bhattacharyya-similarity between ``crop``'s HSV histogram and the histogram built from ``samples``.
 
     Returns ``1 - distance`` capped at ``COLOR_CONFIDENCE_CAP``; 0 means uncorrelated, 1 means identical.
     """
     if crop.size == 0 or not samples:
         return 0.0
-    reference_hist = _samples_to_normalized_histogram(tuple(samples))
+    reference_hist = samples_to_normalized_histogram(tuple(samples))
     hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     crop_hist = cv2.calcHist([hsv_crop], [0, 1, 2], None, list(HSV_HISTOGRAM_BINS), HSV_HISTOGRAM_RANGES)
     cv2.normalize(crop_hist, crop_hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
     distance = cv2.compareHist(reference_hist, crop_hist, cv2.HISTCMP_BHATTACHARYYA)
     similarity = max(0.0, 1.0 - distance)
     return min(similarity, COLOR_CONFIDENCE_CAP)
+
+
+def compute_crop_histogram(crop: np.ndarray) -> np.ndarray:
+    """Compute the normalized HSV histogram for a BGR crop, matching the bins used by identification."""
+
+    if crop.size == 0:
+        return np.zeros(HSV_HISTOGRAM_BINS, dtype=np.float32)
+    hsv_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([hsv_crop], [0, 1, 2], None, list(HSV_HISTOGRAM_BINS), HSV_HISTOGRAM_RANGES)
+    cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+    return hist
+
+
+def histogram_distance(hist_a: np.ndarray, hist_b: np.ndarray) -> float:
+    """Bhattacharyya distance between two normalized HSV histograms. Lower = more similar."""
+
+    return float(cv2.compareHist(hist_a, hist_b, cv2.HISTCMP_BHATTACHARYYA))
 
 
 def build_bowler_target_from_references(
@@ -166,7 +183,7 @@ def build_bowler_target_from_references(
             raise RuntimeError(
                 f"No person detected with foot in lane {lane_name!r} approach zone for {image_path}"
             )
-        crop = _crop_upper_back(img, bowler)
+        crop = crop_upper_back(img, bowler)
         if crop.size == 0:
             continue
         flat = crop.reshape(-1, 3)

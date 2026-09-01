@@ -1,9 +1,12 @@
 """End-to-end orchestration: video -> per-bowler shot clips.
 
-Two search strategies:
-  - linear: scan every frame from 0 to N. Simple, correct, ~6x real-time on CPU YOLO.
-  - probe:  sparse probing at < min-shot-duration interval, range-expand on hits.
-            ~3-5x faster on PBA qualifying footage; preferred default.
+Three search strategies:
+  - linear:    scan every frame from 0 to N. Simple, correct, ~6x real-time on CPU YOLO.
+  - probe:     sparse probing at < min-shot-duration interval, range-expand on hits.
+               ~3-5x faster on PBA qualifying footage; preferred default.
+  - multipass: census → cluster → rotation → validate → binary-search boundaries →
+               pin state → game tracking → export. Separates bowler discovery from
+               shot detection for higher precision.
 """
 from __future__ import annotations
 
@@ -15,7 +18,14 @@ from typing import Literal
 import cv2
 import numpy as np
 
-from turkey_club.config import BowlerTarget, LaneCalibration, SegmentationParameters, VenueCalibration
+from turkey_club.config import (
+    BowlerTarget,
+    GameState,
+    LaneCalibration,
+    PinState,
+    SegmentationParameters,
+    VenueCalibration,
+)
 from turkey_club.detect import bbox_foot_in_polygon, detect_device, detect_persons, frame_has_motion, pin_zone_motion
 from turkey_club.downscale import ensure_downscaled_video
 from turkey_club.export import export_clip
@@ -23,7 +33,7 @@ from turkey_club.identify import identify_bowler_in_frame
 from turkey_club.merge import merge_clips
 from turkey_club.segment import LaneFrameSignals, ShotSegment, find_shot_boundaries
 
-Strategy = Literal["probe", "linear"]
+Strategy = Literal["probe", "linear", "multipass"]
 
 
 @dataclass
@@ -132,6 +142,7 @@ def extract_shots(
     motion_gate: bool = False,
     motion_gate_threshold: float = 3.0,
     device: str = "auto",
+    format_preset: "FormatPreset | None" = None,
 ) -> int:
     """Find and export every shot thrown by the named bowler. Returns the shot count.
 
@@ -197,6 +208,15 @@ def extract_shots(
                 person_confidence_threshold, scaled_min_height, frame_skip,
                 motion_gate, motion_gate_threshold, resolved_device,
             )
+        elif strategy == "multipass":
+            capture.release()
+            shots = _extract_shots_multipass(
+                video, venue, target, candidate_lanes, scaled_params,
+                probe_interval_seconds, person_confidence_threshold,
+                scaled_min_height, resolved_device, out_dir,
+                format_preset=format_preset,
+            )
+            capture = cv2.VideoCapture(str(detection_video))
         else:
             raise ValueError(f"Unknown strategy: {strategy!r}")
     finally:
@@ -497,3 +517,240 @@ def _states_to_signals(states: list[_LaneState]) -> list[LaneFrameSignals]:
         )
         for state in states
     ]
+
+
+def _extract_shots_multipass(
+    video: Path,
+    venue: VenueCalibration,
+    target: BowlerTarget,
+    candidate_lanes: list[LaneCalibration],
+    params: SegmentationParameters,
+    probe_interval_seconds: float,
+    person_confidence_threshold: float,
+    person_min_height_pixels: int,
+    device: str,
+    out_dir: Path,
+    format_preset: "FormatPreset | None" = None,
+) -> list[ShotSegment]:
+    """Multi-pass extraction: census → cluster → rotation → boundary → pinstate → game state."""
+    from turkey_club.boundary import BoundaryResult, find_shot_boundaries_binary
+    from turkey_club.census import run_census
+    from turkey_club.cluster import cluster_bowlers, identify_target_cluster, recover_uncertain
+    from turkey_club.formats import FormatPreset
+    from turkey_club.pinstate import analyze_pin_state
+    from turkey_club.rotation import build_rotation_model, get_target_appearances
+    from turkey_club.validate import (
+        advance_game_state,
+        compute_cadence,
+        detect_gaps,
+        filter_cadence_violations,
+        validate_game_completeness,
+        validate_shot_continuity,
+    )
+
+    census_dir = out_dir / "_census"
+    print("=== Stage 1: Sparse frame census ===", flush=True)
+    records = run_census(
+        video_path=video,
+        venue=venue,
+        output_dir=census_dir,
+        interval_seconds=probe_interval_seconds,
+        person_confidence_threshold=person_confidence_threshold,
+        person_min_height_pixels=person_min_height_pixels,
+        device=device,
+    )
+    print(f"  census: {len(records)} frames with persons in approach zones", flush=True)
+
+    if not records:
+        print("  no persons detected in any approach zone — aborting", flush=True)
+        return []
+
+    print("=== Stage 2: High-confidence bowler clustering ===", flush=True)
+    clusters, uncertain = cluster_bowlers(records, params)
+    print(
+        f"  clusters: {len(clusters)} bowler(s), "
+        f"{len(uncertain)} uncertain frame(s)",
+        flush=True,
+    )
+    for cluster in clusters:
+        print(
+            f"    {cluster.cluster_id}: {len(cluster.frame_appearances)} appearance(s)",
+            flush=True,
+        )
+
+    print("=== Stage 3: Low-confidence recovery ===", flush=True)
+    clusters = recover_uncertain(clusters, uncertain, params)
+    for cluster in clusters:
+        print(
+            f"    {cluster.cluster_id}: {len(cluster.frame_appearances)} appearance(s) (post-recovery)",
+            flush=True,
+        )
+
+    print("=== Stage 4: Target bowler identification ===", flush=True)
+    target_cluster, margin = identify_target_cluster(clusters, target)
+    if target_cluster is None:
+        print("  could not identify target bowler in any cluster — aborting", flush=True)
+        return []
+    print(
+        f"  target cluster: {target_cluster.cluster_id} "
+        f"({len(target_cluster.frame_appearances)} appearances, margin={margin:.3f})",
+        flush=True,
+    )
+
+    expected_bowlers = None
+    if format_preset and format_preset.expected_bowlers_on_pair:
+        expected_bowlers = format_preset.expected_bowlers_on_pair
+
+    print("=== Stage 5: Rotation model + temporal validation ===", flush=True)
+    rotation = build_rotation_model(
+        clusters, target_cluster.cluster_id, expected_bowlers,
+    )
+    if rotation.confident:
+        print("  rotation model: confident", flush=True)
+        for lane_name, order in rotation.rotation_order.items():
+            pos = rotation.target_position.get(lane_name, "?")
+            pred = rotation.predecessor.get(lane_name, "?")
+            print(
+                f"    {lane_name}: {' → '.join(order)} "
+                f"(target at position {pos}, predecessor={pred})",
+                flush=True,
+            )
+    else:
+        print("  rotation model: tentative (falling back to cadence)", flush=True)
+
+    appearances = get_target_appearances(rotation, target_cluster.cluster_id)
+    print(f"  target appearances: {len(appearances)}", flush=True)
+
+    shot_groups = validate_shot_continuity(
+        appearances,
+        fps=_get_video_fps(video),
+        probe_interval_seconds=probe_interval_seconds,
+    )
+    print(f"  shot groups (continuity-validated): {len(shot_groups)}", flush=True)
+
+    cadence = compute_cadence(appearances, _get_video_fps(video))
+    if cadence is not None:
+        print(f"  observed cadence: {cadence:.1f}s", flush=True)
+
+    gaps = detect_gaps(
+        appearances,
+        _get_video_fps(video),
+        rotation_model=rotation,
+        target_cluster_id=target_cluster.cluster_id,
+        cadence_seconds=cadence,
+    )
+    if gaps:
+        print(f"  gaps detected: {len(gaps)}", flush=True)
+        for start, end, reason in gaps:
+            print(f"    frames {start}-{end}: {reason}", flush=True)
+
+    if format_preset:
+        pre_filter_count = len(shot_groups)
+        shot_groups = filter_cadence_violations(shot_groups, _get_video_fps(video), format_preset)
+        if len(shot_groups) < pre_filter_count:
+            print(
+                f"  cadence filter: {pre_filter_count} → {len(shot_groups)} shot groups",
+                flush=True,
+            )
+
+    print("=== Stage 6: Precise shot boundary detection ===", flush=True)
+    cap = cv2.VideoCapture(str(video))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    boundary_results: list[tuple[BoundaryResult, str, float]] = []
+    previous_end = 0
+
+    for group_idx, group in enumerate(shot_groups):
+        probe_frame = group[0][0]
+        lane_name = group[0][1]
+
+        lane = next(
+            (l for l in candidate_lanes if l.name == lane_name),
+            candidate_lanes[0],
+        )
+
+        print(
+            f"  boundary search {group_idx + 1}/{len(shot_groups)}: "
+            f"probe frame {probe_frame}, lane {lane_name}",
+            flush=True,
+        )
+        result = find_shot_boundaries_binary(
+            cap, fps, probe_frame, previous_end,
+            lane, target, params,
+            person_confidence_threshold, person_min_height_pixels, device,
+        )
+
+        if result is not None:
+            confidence = target_cluster.frame_appearances[0].confidence if target_cluster.frame_appearances else 0.5
+            boundary_results.append((result, lane_name, confidence))
+            previous_end = result.end_frame
+            gutter_tag = " [gutter]" if result.gutter_fallback else ""
+            print(
+                f"    → frames {result.start_frame}-{result.end_frame}{gutter_tag}",
+                flush=True,
+            )
+        else:
+            print(f"    → boundary search failed", flush=True)
+
+    print("=== Stage 7: Pin state analysis ===", flush=True)
+    game_state = GameState()
+    shot_segments: list[ShotSegment] = []
+
+    for boundary, lane_name, confidence in boundary_results:
+        lane = next(
+            (l for l in candidate_lanes if l.name == lane_name),
+            candidate_lanes[0],
+        )
+
+        pin_state = analyze_pin_state(
+            cap,
+            pre_shot_frame=boundary.pre_shot_frame or max(0, boundary.start_frame - int(fps)),
+            post_settle_frame=boundary.settle_frame or boundary.end_frame,
+            lane=lane,
+            gutter_fallback=boundary.gutter_fallback,
+        )
+        print(
+            f"  shot frames {boundary.start_frame}-{boundary.end_frame}: "
+            f"pin_state={pin_state.value}",
+            flush=True,
+        )
+
+        print("=== Stage 8: Game state tracking ===", flush=True)
+        game_state = advance_game_state(
+            game_state, pin_state, lane_name,
+            boundary.start_frame, boundary.end_frame,
+            gutter_fallback=boundary.gutter_fallback,
+            bowler_confidence=confidence,
+            format_preset=format_preset,
+        )
+
+        shot_segments.append(ShotSegment(
+            lane_name=lane_name,
+            start_frame=boundary.start_frame,
+            end_frame=boundary.end_frame,
+            bowler_confidence=confidence,
+            gutter_fallback=boundary.gutter_fallback,
+        ))
+
+    cap.release()
+
+    print("=== Game state summary ===", flush=True)
+    print(
+        f"  frame {game_state.current_frame}, shot {game_state.current_shot_in_frame}, "
+        f"complete={game_state.complete}, total shots={len(game_state.shots)}",
+        flush=True,
+    )
+    warnings = validate_game_completeness(game_state, format_preset)
+    for warning in warnings:
+        print(f"  WARNING: {warning}", flush=True)
+
+    shot_segments.sort(key=lambda s: s.start_frame)
+    return shot_segments
+
+
+def _get_video_fps(video: Path) -> float:
+    cap = cv2.VideoCapture(str(video))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    cap.release()
+    return fps

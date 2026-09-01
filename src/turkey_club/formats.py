@@ -12,6 +12,9 @@ class FormatPreset:
     expected_shots_min: int | None
     expected_shots_max: int | None
     probe_interval_seconds: float = 10.0
+    expected_cadence_seconds: float | None = None
+    lane_alternation_pattern: str | None = None
+    expected_bowlers_on_pair: int | None = None
 
     def validate_bowler_lane(self, bowler_lane: str | None) -> None:
         if self.requires_bowler_lane and bowler_lane is None:
@@ -60,6 +63,9 @@ PRESETS: dict[str, FormatPreset] = {
         requires_bowler_lane=False,
         expected_shots_min=18,
         expected_shots_max=24,
+        expected_cadence_seconds=240.0,
+        lane_alternation_pattern="LR",
+        expected_bowlers_on_pair=5,
     ),
     "doubles": FormatPreset(
         name="doubles",
@@ -67,6 +73,9 @@ PRESETS: dict[str, FormatPreset] = {
         requires_bowler_lane=False,
         expected_shots_min=18,
         expected_shots_max=24,
+        expected_cadence_seconds=120.0,
+        lane_alternation_pattern="LR",
+        expected_bowlers_on_pair=4,
     ),
     "scotch-doubles": FormatPreset(
         name="scotch-doubles",
@@ -74,6 +83,9 @@ PRESETS: dict[str, FormatPreset] = {
         requires_bowler_lane=False,
         expected_shots_min=8,
         expected_shots_max=15,
+        expected_cadence_seconds=120.0,
+        lane_alternation_pattern="LR",
+        expected_bowlers_on_pair=4,
     ),
     "league": FormatPreset(
         name="league",
@@ -81,6 +93,9 @@ PRESETS: dict[str, FormatPreset] = {
         requires_bowler_lane=False,
         expected_shots_min=18,
         expected_shots_max=24,
+        expected_cadence_seconds=180.0,
+        lane_alternation_pattern="LR",
+        expected_bowlers_on_pair=4,
     ),
     "baker": FormatPreset(
         name="baker",
@@ -88,6 +103,9 @@ PRESETS: dict[str, FormatPreset] = {
         requires_bowler_lane=True,
         expected_shots_min=2,
         expected_shots_max=12,
+        expected_cadence_seconds=300.0,
+        lane_alternation_pattern=None,
+        expected_bowlers_on_pair=10,
     ),
     "singles-practice": FormatPreset(
         name="singles-practice",
@@ -95,6 +113,9 @@ PRESETS: dict[str, FormatPreset] = {
         requires_bowler_lane=False,
         expected_shots_min=None,
         expected_shots_max=None,
+        expected_cadence_seconds=30.0,
+        lane_alternation_pattern=None,
+        expected_bowlers_on_pair=1,
     ),
     "open-bowling": FormatPreset(
         name="open-bowling",

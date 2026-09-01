@@ -55,17 +55,24 @@
 
 | Module | Purpose |
 |---|---|
-| `cli.py` | Typer CLI: `calibrate`, `extract`, `preview`, `fetch`, `merge`. |
-| `config.py` | Dataclasses: `VenueCalibration`, `LaneCalibration`, `BowlerTarget`, `SegmentationParameters`. JSON load/save with tuple coercion. |
+| `cli.py` | Typer CLI: `calibrate`, `extract`, `preview`, `fetch`, `merge`, `build-bowler`, `detect-format`. |
+| `config.py` | Dataclasses: `VenueCalibration`, `LaneCalibration`, `BowlerTarget`, `SegmentationParameters`, `CensusRecord`, `CensusPersonRecord`, `BowlerCluster`, `ClusterAppearance`, `RotationModel`, `GameState`, `ShotEvent`, `PinState`. JSON load/save with tuple coercion. |
 | `source.py` | Resolve local-path-or-URL via yt-dlp; cache resolution. |
 | `downscale.py` | Snap-to-supported-factor validation; ensure cached `<source>.detect_<scale>x.mp4` exists. |
 | `calibrate.py` | Interactive OpenCV polygon collector; overlay renderer. |
-| `detect.py` | YOLOv8 person detection; foot-in-polygon check; pin-zone frame-diff; (stub) ball motion. |
-| `identify.py` | OCR + color-histogram bowler-confidence scoring; build BowlerTarget from references. |
+| `detect.py` | YOLOv8 person detection; foot-in-polygon check; pin-zone frame-diff; ball motion blob analysis. |
+| `identify.py` | OCR + color-histogram bowler-confidence scoring; build BowlerTarget from references. Public: `crop_upper_back`, `compute_crop_histogram`, `histogram_distance`, `samples_to_normalized_histogram`, `color_histogram_confidence`. |
 | `segment.py` | `LaneFrameSignals`, `ShotSegment`, `find_shot_boundaries` state machine. |
-| `pipeline.py` | End-to-end orchestration; linear + probe-then-range strategies. |
+| `census.py` | Stage 1: sparse frame extraction + YOLO person detection + HSV identity feature extraction + JSON sidecar persistence. |
+| `cluster.py` | Stages 2-4: high-confidence bowler clustering, low-confidence recovery with margin criterion, target bowler identification against clusters. |
+| `rotation.py` | Stage 5a-5c: per-lane bowler sequence construction, rotation cycle extraction, target position + predecessor identification, prediction. |
+| `boundary.py` | Stage 6: coarse-to-fine binary search for approach start; two-spike temporal signature detection for shot end (pin impact → settle → pinsetter sweep → settle); gutter ball fallback path. |
+| `pinstate.py` | Stage 7: pin zone state analysis via pre-shot vs post-settle comparison; gutter ball inference; SSIM-style zone differencing. |
+| `validate.py` | Stages 5d-5f, 8: temporal cadence fallback, shot continuity validation, gap detection, game state tracking FSM (strike/spare/open/gutter), 10th frame logic, anomaly detection. |
+| `pipeline.py` | End-to-end orchestration; linear + probe + multipass strategies. |
 | `export.py` | ffmpeg frame-accurate clip cut; streamed-stderr ffmpeg runner. |
 | `merge.py` | ffmpeg concat of per-shot clips. |
+| `formats.py` | Bowling format presets with lane policy, expected shots, cadence, lane alternation pattern, expected bowlers on pair. |
 
 ## Phase plan and status
 
@@ -90,6 +97,7 @@
 | 16 | Motion-gate YOLO via background subtraction | ✅ Done | `--motion-gate` / `--motion-gate-threshold` skip YOLO on static frames; pin-zone motion still computed. `frame_has_motion()` in `detect.py`. |
 | 17 | Optional GPU acceleration (CUDA torch) | ✅ Done | `--device auto/cpu/cuda`; `detect_device()` resolves CUDA availability; threaded through pipeline to YOLO inference. |
 | 18 | Format auto-detect from prefix scan | ✅ Done | `detect-format` CLI subcommand + auto-detect in `extract` when `--format` omitted. `scan_prefix()` probes first 30s; `detect_format_from_prefix()` maps lane activity to preset. Tests in `tests/test_formats.py`. |
+| 19 | Multi-pass bowler extraction pipeline | ✅ Done | `--strategy multipass`: census → cluster → rotation → binary-search boundaries → pin state → game tracking → export. 6 new modules (`census.py`, `cluster.py`, `rotation.py`, `boundary.py`, `pinstate.py`, `validate.py`). Extended `config.py` with `GameState`, `RotationModel`, `CensusRecord`, `BowlerCluster`, `PinState`. Extended `formats.py` with `expected_cadence_seconds`, `lane_alternation_pattern`, `expected_bowlers_on_pair`. Tests in `tests/test_census.py`, `tests/test_cluster.py`, `tests/test_rotation.py`, `tests/test_boundary.py`, `tests/test_pinstate.py`, `tests/test_validate.py`. |
 
 ## Dependencies between phases
 
