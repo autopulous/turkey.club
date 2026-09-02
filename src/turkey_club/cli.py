@@ -175,14 +175,14 @@ def extract(
         None,
         "--format",
         help=(
-            "Bowling format preset. Bundles probe interval + lane policy + expected shot count. "
+            "Bowling format preset. Bundles census interval + lane policy + expected shot count. "
             "Presets: pba-qualifying, doubles, scotch-doubles, league, baker, singles-practice, open-bowling. "
             "Explicit --probe-interval and --bowler-lane still override the preset."
         ),
     ),
-    strategy: str = typer.Option("probe", "--strategy", help="Search strategy: 'probe' (sparse probes + fixed clips), 'linear' (every-frame scan), or 'multipass' (census, cluster, rotation, binary-search boundaries)."),
+    strategy: str = typer.Option("multipass", "--strategy", help="Search strategy: 'multipass' (census, cluster, rotation, binary-search boundaries) or 'linear' (every-frame scan)."),
     bowler_lane: str | None = typer.Option(None, "--bowler-lane", help="Restrict search to a single calibrated lane (e.g. for Baker format). Default: search all calibrated lanes."),
-    probe_interval_seconds: float | None = typer.Option(None, "--probe-interval", help="Probe interval in seconds (probe strategy only). Default: 10.0, or the format preset's value."),
+    probe_interval_seconds: float | None = typer.Option(None, "--probe-interval", help="Census interval in seconds. Default: 10.0, or the format preset's value."),
     merge: bool = typer.Option(True, "--merge/--no-merge", help="After exporting per-shot clips, concatenate them into <out>/all_shots.mp4. Use --no-merge to skip."),
     merge_out: Path | None = typer.Option(None, "--merge-out", help="Override merged-video output path. Default: <out>/all_shots.mp4."),
     downscale_factor: float = typer.Option(0.5, "--downscale-factor", help="Detection-time downscale. Must be one of 1.0, 0.75, 0.5, 0.4, 0.33, 0.25; other values snap down to the closest supported and prompt for confirmation."),
@@ -421,7 +421,7 @@ def build_bowler(
 def merge(
     clips_dir: Path = typer.Option(..., "--clips-dir", exists=True, help="Directory containing the per-shot clip files."),
     out: Path = typer.Option(..., help="Output merged video path."),
-    pattern: str = typer.Option("shot_*.mp4", help="Glob pattern for clips to merge (sorted lexicographically)."),
+    pattern: str = typer.Option("[0-9][0-9][0-9]_*.mp4", help="Glob pattern for clips to merge (sorted lexicographically)."),
     reencode: bool = typer.Option(False, "--reencode", help="Re-encode instead of stream-copy. Slower but tolerant of differing source encodings."),
 ) -> None:
     """Concatenate per-shot clips into a single merged highlight video."""

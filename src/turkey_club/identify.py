@@ -385,14 +385,20 @@ def build_bowler_target_from_video_frame(
         )
 
     detections = detect_persons(frame, confidence_threshold=0.4, min_height_pixels=80)
+    print(f"  detected {len(detections)} person(s) at frame {frame_number}", flush=True)
+    for i, d in enumerate(detections):
+        x1, y1, x2, y2 = d.bbox
+        foot = ((x1 + x2) / 2, y2)
+        print(f"    person {i}: bbox=({x1},{y1},{x2},{y2}) foot=({foot[0]:.0f},{foot[1]:.0f})", flush=True)
 
     lanes_to_check = [venue.lane(lane_name)] if lane_name else venue.lanes
     candidates: list[tuple] = []
     for lane in lanes_to_check:
-        for d in detections:
-            if (bbox_foot_in_polygon(d.bbox, lane.approach_zone)
-                    and shoulders_visible(d.keypoints, MIN_SHOULDER_CONFIDENCE)):
-                candidates.append((d, lane.name))
+        in_zone = [d for d in detections if bbox_foot_in_polygon(d.bbox, lane.approach_zone)]
+        back_facing = [d for d in in_zone if shoulders_visible(d.keypoints, MIN_SHOULDER_CONFIDENCE)]
+        print(f"  lane {lane.name!r}: {len(in_zone)} in approach, {len(back_facing)} back-facing", flush=True)
+        for d in back_facing:
+            candidates.append((d, lane.name))
 
     if not candidates:
         zone_desc = f"lane {lane_name!r}" if lane_name else "any lane"

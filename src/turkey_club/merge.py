@@ -11,7 +11,7 @@ from turkey_club.export import _run_ffmpeg_streamed
 def merge_clips(
     clips_dir: Path,
     out_path: Path,
-    pattern: str = "shot_*.mp4",
+    pattern: str = "[0-9][0-9][0-9]_*.mp4",
     reencode: bool = False,
 ) -> None:
     """Concatenate every clip in ``clips_dir`` matching ``pattern`` into ``out_path``.

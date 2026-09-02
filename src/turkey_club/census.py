@@ -27,7 +27,7 @@ from turkey_club.detect import (
     bbox_foot_in_polygon,
     detect_persons,
 )
-from turkey_club.identify import compute_crop_histogram, crop_back_from_keypoints
+from turkey_club.identify import compute_crop_histogram, crop_back_from_keypoints, preprocess_for_histogram
 
 MIN_SHOULDER_CONFIDENCE = 0.5
 MIN_SHOULDER_SPAN_RATIO = 0.25
@@ -112,6 +112,12 @@ def run_census(
                     (kp[0] - vx1, kp[1] - vy1, kp[2])
                     for kp in detection.keypoints
                 ]
+
+            person_idx = len(census_persons)
+            crop_filename = f"{frame_number:06d}_p{person_idx:02d}_crop.jpg"
+            enhanced_filename = f"{frame_number:06d}_p{person_idx:02d}_enhanced.jpg"
+            cv2.imwrite(str(output_dir / crop_filename), crop)
+            cv2.imwrite(str(output_dir / enhanced_filename), preprocess_for_histogram(crop))
 
             census_persons.append(CensusPersonRecord(
                 bbox=offset_bbox,

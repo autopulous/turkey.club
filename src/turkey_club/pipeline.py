@@ -1,12 +1,10 @@
 """End-to-end orchestration: video -> per-bowler shot clips.
 
-Three search strategies:
+Two search strategies:
   - linear:    scan every frame from 0 to N. Simple, correct, ~6x real-time on CPU YOLO.
-  - probe:     sparse probing at < min-shot-duration interval, range-expand on hits.
-               ~3-5x faster on PBA qualifying footage; preferred default.
   - multipass: census → cluster → rotation → validate → binary-search boundaries →
                pin state → game tracking → export. Separates bowler discovery from
-               shot detection for higher precision.
+               shot detection for higher precision. Default.
 """
 from __future__ import annotations
 
@@ -22,7 +20,6 @@ from turkey_club.config import (
     BowlerTarget,
     GameState,
     LaneCalibration,
-    PinState,
     SegmentationParameters,
     VenueCalibration,
 )
@@ -33,7 +30,7 @@ from turkey_club.identify import identify_bowler_in_frame
 from turkey_club.merge import merge_clips
 from turkey_club.segment import LaneFrameSignals, ShotSegment, find_shot_boundaries
 
-Strategy = Literal["probe", "linear", "multipass"]
+Strategy = Literal["linear", "multipass"]
 
 
 @dataclass
@@ -130,12 +127,10 @@ def extract_shots(
     bowler_target_path: Path,
     calibration_path: Path,
     out_dir: Path,
-    strategy: Strategy = "probe",
+    strategy: Strategy = "multipass",
     bowler_lane: str | None = None,
     lane_policy: str | None = None,
     probe_interval_seconds: float = 10.0,
-    shot_lookback_seconds: float = 2.0,
-    shot_duration_seconds: float = 10.0,
     person_confidence_threshold: float = 0.4,
     person_min_height_pixels: int = 80,
     merge: bool = True,
@@ -158,14 +153,13 @@ def extract_shots(
     target = BowlerTarget.load(bowler_target_path)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    effective_downscale = 1.0 if strategy == "probe" else downscale_factor
-    detection_video = ensure_downscaled_video(video, scale_factor=effective_downscale)
-    scaled_lanes = [_scale_lane(lane, effective_downscale) for lane in venue.lanes]
+    detection_video = ensure_downscaled_video(video, scale_factor=downscale_factor)
+    scaled_lanes = [_scale_lane(lane, downscale_factor) for lane in venue.lanes]
     scaled_params = dataclasses.replace(
         SegmentationParameters(),
-        pose_motion_threshold_pixels=SegmentationParameters().pose_motion_threshold_pixels * effective_downscale,
+        pose_motion_threshold_pixels=SegmentationParameters().pose_motion_threshold_pixels * downscale_factor,
     )
-    scaled_min_height = max(20, int(person_min_height_pixels * effective_downscale))
+    scaled_min_height = max(20, int(person_min_height_pixels * downscale_factor))
 
     resolved_device = detect_device(device)
     print(f"device={resolved_device} (requested={device})", flush=True)
@@ -198,17 +192,20 @@ def extract_shots(
         flush=True,
     )
 
+    census_dir = out_dir.parent / "census"
+    diagnostics_dir = out_dir.parent / "diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+
+    if target.source_image_paths:
+        import shutil
+        ref_path = Path(target.source_image_paths[0])
+        if ref_path.exists():
+            shutil.copy2(str(ref_path), str(diagnostics_dir / "reference.jpg"))
+
     try:
         if strategy == "linear":
             shots = _extract_shots_linear(
                 capture, total_frames, fps, target, candidate_lanes, scaled_params,
-                person_confidence_threshold, scaled_min_height, frame_skip,
-                motion_gate, motion_gate_threshold, resolved_device,
-            )
-        elif strategy == "probe":
-            shots = _extract_shots_probe(
-                capture, total_frames, fps, target, candidate_lanes, scaled_params,
-                probe_interval_seconds, shot_lookback_seconds, shot_duration_seconds,
                 person_confidence_threshold, scaled_min_height, frame_skip,
                 motion_gate, motion_gate_threshold, resolved_device,
             )
@@ -217,7 +214,7 @@ def extract_shots(
             shots = _extract_shots_multipass(
                 video, venue, target, candidate_lanes, scaled_params,
                 probe_interval_seconds, person_confidence_threshold,
-                scaled_min_height, resolved_device, out_dir,
+                scaled_min_height, resolved_device, census_dir,
                 format_preset=format_preset,
             )
             capture = cv2.VideoCapture(str(detection_video))
@@ -229,22 +226,20 @@ def extract_shots(
     gutter_count = sum(1 for shot in shots if shot.gutter_fallback)
     print(f"found {len(shots)} shot(s) ({gutter_count} gutter-fallback)", flush=True)
     for index, shot in enumerate(shots, start=1):
-        suffix = "_gutter" if shot.gutter_fallback else ""
-        clip_path = out_dir / f"shot_{index:02d}_{shot.lane_name}{suffix}.mp4"
+        clip_path = out_dir / f"{index:03d}_{shot.start_frame:05d}-{shot.end_frame:05d}.mp4"
         export_clip(video, shot, fps, clip_path)
         gutter_tag = " [gutter]" if shot.gutter_fallback else ""
         print(
-            f"  shot {index:02d}: lane={shot.lane_name}{gutter_tag} "
-            f"frames {shot.start_frame}-{shot.end_frame} "
+            f"  {clip_path.name}: lane={shot.lane_name}{gutter_tag} "
             f"({(shot.end_frame - shot.start_frame) / fps:.2f}s) "
-            f"bowler_conf={shot.bowler_confidence:.3f} -> {clip_path.name}",
+            f"bowler_conf={shot.bowler_confidence:.3f}",
             flush=True,
         )
 
     if merge and len(shots) >= 2:
         merged_path = merge_out if merge_out is not None else out_dir / "all_shots.mp4"
         print(f"merging {len(shots)} clips -> {merged_path}", flush=True)
-        merge_clips(out_dir, merged_path, pattern="shot_*.mp4")
+        merge_clips(out_dir, merged_path, pattern="[0-9][0-9][0-9]_*.mp4")
     elif merge and len(shots) < 2:
         print(f"skipping merge: only {len(shots)} clip(s) produced (need >= 2)", flush=True)
 
@@ -265,7 +260,7 @@ def _extract_shots_linear(
     motion_gate_threshold: float = 3.0,
     device: str = "cpu",
 ) -> list[ShotSegment]:
-    """Linear single-pass scan over the entire video — the oracle for validating ``probe``."""
+    """Linear single-pass scan over the entire video"""
     states = [_LaneState(name=lane.name, bowler_confidence=[], pose_motion=[], pin_motion=[], ball_reached_pins=[]) for lane in candidate_lanes]
     previous_frame = None
     gated_count = 0
@@ -293,107 +288,6 @@ def _extract_shots_linear(
         print(f"  motion-gate skipped YOLO on {gated_count} frames", flush=True)
     effective_fps = fps / frame_skip
     return find_shot_boundaries(_states_to_signals(states), effective_fps, params)
-
-
-def _extract_shots_probe(
-    capture: cv2.VideoCapture,
-    total_frames: int,
-    fps: float,
-    target: BowlerTarget,
-    candidate_lanes: list[LaneCalibration],
-    params: SegmentationParameters,
-    probe_interval_seconds: float,
-    shot_lookback_seconds: float,
-    shot_duration_seconds: float,
-    person_confidence_threshold: float,
-    person_min_height_pixels: int,
-    frame_skip: int = 1,
-    motion_gate: bool = False,
-    motion_gate_threshold: float = 3.0,
-    device: str = "cpu",
-) -> list[ShotSegment]:
-    """Sparse probing at ``probe_interval_seconds``; each HIT becomes a fixed-duration clip."""
-    probe_interval_frames = max(1, int(probe_interval_seconds * fps))
-    lookback_frames = int(shot_lookback_seconds * fps)
-    forward_frames = int(shot_duration_seconds * fps)
-    bowler_thresh = params.bowler_confidence_threshold
-
-    all_shots: list[ShotSegment] = []
-    probe_frame = 0
-    probe_count = 0
-    hit_count = 0
-
-    while probe_frame < total_frames:
-        probe_count += 1
-        capture.set(cv2.CAP_PROP_POS_FRAMES, probe_frame)
-        ok, frame = capture.read()
-        if not ok:
-            break
-        persons = detect_persons(frame, confidence_threshold=person_confidence_threshold, min_height_pixels=person_min_height_pixels, device=device)
-        hit_lane_name: str | None = None
-        hit_confidence: float = 0.0
-        for lane in candidate_lanes:
-            for detection in persons:
-                if not bbox_foot_in_polygon(detection.bbox, lane.approach_zone):
-                    continue
-                confidence = identify_bowler_in_frame(
-                    frame, detection.bbox, target,
-                    use_ocr=False, keypoints=detection.keypoints,
-                )
-                if confidence >= bowler_thresh:
-                    hit_lane_name = lane.name
-                    hit_confidence = confidence
-                    break
-            if hit_lane_name is not None:
-                break
-
-        if hit_lane_name is None:
-            print(
-                f"  probe #{probe_count} @ frame {probe_frame} of {total_frames} "
-                f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): no hit",
-                flush=True,
-            )
-            probe_frame += probe_interval_frames
-            continue
-
-        start_frame = max(0, probe_frame - lookback_frames)
-        end_frame = min(total_frames, probe_frame + forward_frames)
-        duration = (end_frame - start_frame) / fps
-
-        is_dup = any(
-            existing.start_frame == start_frame and existing.lane_name == hit_lane_name
-            for existing in all_shots
-        )
-        if not is_dup:
-            hit_count += 1
-            shot = ShotSegment(
-                lane_name=hit_lane_name,
-                start_frame=start_frame,
-                end_frame=end_frame,
-                bowler_confidence=hit_confidence,
-                gutter_fallback=False,
-            )
-            all_shots.append(shot)
-            print(
-                f"  probe #{probe_count} @ frame {probe_frame} "
-                f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): "
-                f"HIT #{hit_count} — lane={hit_lane_name} conf={hit_confidence:.3f} "
-                f"-> shot [{start_frame}-{end_frame}] ({duration:.1f}s)",
-                flush=True,
-            )
-        else:
-            print(
-                f"  probe #{probe_count} @ frame {probe_frame} "
-                f"({probe_frame/fps:.1f}s, {probe_frame/total_frames*100:.1f}%): "
-                f"HIT (dup, skipped) — lane={hit_lane_name}",
-                flush=True,
-            )
-
-        probe_frame = max(end_frame + 1, probe_frame + probe_interval_frames)
-
-    print(f"  probes: {probe_count}, hits: {hit_count}", flush=True)
-    all_shots.sort(key=lambda shot: shot.start_frame)
-    return all_shots
 
 
 def _scan_window(
@@ -540,7 +434,7 @@ def _extract_shots_multipass(
     person_confidence_threshold: float,
     person_min_height_pixels: int,
     device: str,
-    out_dir: Path,
+    census_dir: Path,
     format_preset: "FormatPreset | None" = None,
 ) -> list[ShotSegment]:
     """Multi-pass extraction: census → cluster → rotation → boundary → pinstate → game state."""
@@ -559,7 +453,6 @@ def _extract_shots_multipass(
         validate_shot_continuity,
     )
 
-    census_dir = out_dir / "_census"
     print("=== Stage 1: Sparse frame census ===", flush=True)
     records = run_census(
         video_path=video,

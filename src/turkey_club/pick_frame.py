@@ -112,6 +112,9 @@ def pick_reference_frame(
     selected = False
 
     while True:
+        if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+            break
+
         canvas_w, canvas_h = _get_window_size(initial_canvas_w, initial_canvas_h)
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
@@ -206,7 +209,7 @@ def pick_reference_frame(
             last_cursor_toggle = now
 
     cap.release()
-    cv2.destroyWindow(WINDOW_NAME)
+    cv2.destroyAllWindows()
     return (current_frame, bowler_name) if selected else None
 
 
@@ -253,6 +256,9 @@ def pick_video_frame(video_path: Path, initial_frame: int = 0) -> int | None:
     selected = False
 
     while True:
+        if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+            break
+
         canvas_w, canvas_h = _get_window_size(initial_canvas_w, initial_canvas_h)
 
         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
@@ -337,7 +343,7 @@ def pick_video_frame(video_path: Path, initial_frame: int = 0) -> int | None:
             last_cursor_toggle = now
 
     cap.release()
-    cv2.destroyWindow(WINDOW_NAME)
+    cv2.destroyAllWindows()
     return current_frame if selected else None
 
 
