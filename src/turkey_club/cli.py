@@ -89,7 +89,7 @@ def calibrate(
     cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
 ) -> None:
     """Interactively mark approach, lane, and pin zones for each lane on a still frame."""
-    from turkey_club.calibrate import run_interactive_calibration
+    from turkey_club.calibrate import ZONE_COLORS, _draw_zone, run_interactive_calibration
     from turkey_club.source import resolve_source
 
     initial_frame = 0
@@ -152,10 +152,19 @@ def calibrate(
 
     frame_path = data_dir / "calibration_frame.jpg"
     cv2.imwrite(str(frame_path), img)
-    typer.echo(f"Saved calibration frame: {frame_path}")
 
     frames = [frame_path] * len(lane)
-    run_interactive_calibration(frames, out, lane_names=lane)
+    calibration = run_interactive_calibration(frames, out, lane_names=lane)
+
+    venue_img = img.copy()
+    for lane_cal in calibration.lanes:
+        _draw_zone(venue_img, lane_cal.approach_zone, ZONE_COLORS["approach"], f"{lane_cal.name}:approach")
+        _draw_zone(venue_img, lane_cal.lane_zone, ZONE_COLORS["lane"], f"{lane_cal.name}:lane")
+        _draw_zone(venue_img, lane_cal.pin_zone, ZONE_COLORS["pin"], f"{lane_cal.name}:pin")
+    venue_path = data_dir / "venue.jpg"
+    cv2.imwrite(str(venue_path), venue_img)
+    frame_path.unlink(missing_ok=True)
+    typer.echo(f"Saved venue image with lane overlays: {venue_path}")
 
 
 @app.command()
@@ -185,16 +194,13 @@ def extract(
     probe_interval_seconds: float | None = typer.Option(None, "--probe-interval", help="Census interval in seconds. Default: 10.0, or the format preset's value."),
     merge: bool = typer.Option(True, "--merge/--no-merge", help="After exporting per-shot clips, concatenate them into <out>/all_shots.mp4. Use --no-merge to skip."),
     merge_out: Path | None = typer.Option(None, "--merge-out", help="Override merged-video output path. Default: <out>/all_shots.mp4."),
-    downscale_factor: float = typer.Option(0.5, "--downscale-factor", help="Detection-time downscale. Must be one of 1.0, 0.75, 0.5, 0.4, 0.33, 0.25; other values snap down to the closest supported and prompt for confirmation."),
     frame_skip: int = typer.Option(1, "--frame-skip", help="Process every Nth frame during scan windows. Higher values reduce YOLO inference calls proportionally. 1 = every frame (default), 2 = every other, 3 = every third."),
     motion_gate: bool = typer.Option(False, "--motion-gate/--no-motion-gate", help="Skip YOLO inference on frames with no global motion (background subtraction gate). Reduces CPU in dead-time regions."),
     motion_gate_threshold: float = typer.Option(3.0, "--motion-gate-threshold", help="Mean pixel-difference threshold for the motion gate. Lower = more sensitive (fewer skips)."),
     device: str = typer.Option("auto", "--device", help="Detection device: 'auto' (use CUDA if available), 'cpu', or 'cuda'."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-confirm any adjustment prompts (required for non-interactive runs)."),
     cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
 ) -> None:
     """Detect and export every shot thrown by the named bowler."""
-    from turkey_club.downscale import VALID_DOWNSCALE_FACTORS, snap_downscale_factor
     from turkey_club.formats import PRESETS, FormatPreset
     from turkey_club.pipeline import extract_shots
     from turkey_club.source import resolve_source
@@ -236,19 +242,6 @@ def extract(
             raise typer.Exit(code=2)
         typer.echo(f"Format: {preset.name} (lane_policy={preset.lane_policy})")
 
-    try:
-        snapped_factor = snap_downscale_factor(downscale_factor)
-    except ValueError as error:
-        typer.echo(str(error), err=True)
-        raise typer.Exit(code=2)
-    if snapped_factor != downscale_factor:
-        typer.echo(
-            f"Note: --downscale-factor {downscale_factor} is not in the supported set "
-            f"{sorted(VALID_DOWNSCALE_FACTORS, reverse=True)}. Adjusting to {snapped_factor}."
-        )
-        if not yes and not typer.confirm("Proceed with adjusted value?", default=True):
-            raise typer.Abort()
-
     video_path = resolve_source(video, cache_dir=cache_dir)
     typer.echo(f"Using video: {video_path}")
 
@@ -259,7 +252,7 @@ def extract(
         typer.echo("No --format given; running prefix scan to auto-detect...")
         scan_result = scan_prefix(
             video_path, bowler_target, calibration,
-            downscale_factor=snapped_factor, device=device,
+            device=device,
         )
         preset = detect_format_from_prefix(scan_result["active_lanes"], scan_result["total_calibrated"])
         if preset is not None:
@@ -288,7 +281,6 @@ def extract(
         probe_interval_seconds=effective_probe_interval,
         merge=merge,
         merge_out=merge_out,
-        downscale_factor=snapped_factor,
         frame_skip=frame_skip,
         motion_gate=motion_gate,
         motion_gate_threshold=motion_gate_threshold,
@@ -444,7 +436,6 @@ def detect_format(
     ),
     calibration: Path = typer.Option(..., exists=True, help="Venue calibration JSON from `calibrate`."),
     prefix_seconds: float = typer.Option(30.0, "--prefix-seconds", help="How many seconds of video to scan."),
-    downscale_factor: float = typer.Option(0.5, "--downscale-factor", help="Detection-time downscale."),
     device: str = typer.Option("auto", "--device", help="Detection device: 'auto', 'cpu', or 'cuda'."),
     cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
 ) -> None:
@@ -458,7 +449,7 @@ def detect_format(
 
     scan_result = scan_prefix(
         video_path, bowler_target, calibration,
-        prefix_seconds=prefix_seconds, downscale_factor=downscale_factor, device=device,
+        prefix_seconds=prefix_seconds, device=device,
     )
     preset = detect_format_from_prefix(scan_result["active_lanes"], scan_result["total_calibrated"])
 
@@ -490,16 +481,14 @@ def debug_clustering(
         "--format",
         help="Bowling format preset name (e.g. 'pba-qualifying'). Optional, used for display context.",
     ),
-    downscale_factor: float = typer.Option(0.5, "--downscale-factor", help="Detection-time downscale."),
     device: str = typer.Option("auto", "--device", help="Detection device: 'auto', 'cpu', or 'cuda'."),
     cache_dir: Path | None = typer.Option(None, help="Override download cache directory for remote sources."),
 ) -> None:
     """Replay Stages 1-4 with an interactive side-by-side visualization of each clustering comparison."""
     from turkey_club.census import load_census_records, run_census
     from turkey_club.config import BowlerTarget as BowlerTargetConfig
-    from turkey_club.config import LaneCalibration, SegmentationParameters, VenueCalibration
+    from turkey_club.config import SegmentationParameters, VenueCalibration
     from turkey_club.debug_clustering import replay_clustering, run_debug_viewer
-    from turkey_club.downscale import ensure_downscaled_video
     from turkey_club.source import resolve_source
 
     video_path = resolve_source(video, cache_dir=cache_dir)
@@ -508,10 +497,6 @@ def debug_clustering(
     venue = VenueCalibration.load(calibration)
     target_obj = BowlerTargetConfig.load(bowler_target)
     params = SegmentationParameters()
-
-    detect_video = ensure_downscaled_video(video_path, scale_factor=downscale_factor)
-    scale = downscale_factor if detect_video != video_path else 1.0
-    typer.echo(f"detection: {detect_video.name}")
 
     actual_device = device
     if device == "auto":
@@ -528,26 +513,9 @@ def debug_clustering(
         records = load_census_records(census_dir)
     else:
         typer.echo("Running Stage 1: Sparse frame census ...")
-
-        def _scale_poly(poly: list[tuple[int, int]]) -> list[tuple[int, int]]:
-            return [(int(x * scale), int(y * scale)) for x, y in poly]
-
-        scaled_venue = VenueCalibration(
-            lanes=[
-                LaneCalibration(
-                    name=lane.name,
-                    approach_zone=_scale_poly(lane.approach_zone),
-                    lane_zone=_scale_poly(lane.lane_zone),
-                    pin_zone=_scale_poly(lane.pin_zone),
-                )
-                for lane in venue.lanes
-            ],
-            frame_width=int(venue.frame_width * scale),
-            frame_height=int(venue.frame_height * scale),
-        )
         records = run_census(
-            video_path=detect_video,
-            venue=scaled_venue,
+            video_path=video_path,
+            venue=venue,
             output_dir=census_dir,
             interval_seconds=10.0,
             device=actual_device,

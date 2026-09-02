@@ -112,8 +112,8 @@ class SegmentationParameters:
     max_impact_to_settle_seconds: float = 5.0
     gutter_fallback_seconds_after_onset: float = 4.0
 
-    cluster_tight_threshold: float = 0.60
-    cluster_loose_threshold: float = 0.75
+    cluster_tight_threshold: float = 0.30
+    cluster_loose_threshold: float = 0.50
     cluster_margin_ratio: float = 0.05
     pin_impact_threshold: float = 1.0
     max_shot_duration_seconds: float = 20.0

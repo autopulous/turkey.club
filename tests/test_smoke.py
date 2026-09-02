@@ -22,7 +22,6 @@ def test_module_imports() -> None:
     import turkey_club.calibrate  # noqa: F401
     import turkey_club.config  # noqa: F401
     import turkey_club.detect  # noqa: F401
-    import turkey_club.downscale  # noqa: F401
     import turkey_club.export  # noqa: F401
     import turkey_club.identify  # noqa: F401
     import turkey_club.merge  # noqa: F401

@@ -22,7 +22,7 @@ from turkey_club.detect import (
     KEYPOINT_RIGHT_SHOULDER,
 )
 from turkey_club.identify import (
-    HSV_HISTOGRAM_BINS,
+    LBP_HISTOGRAM_BINS,
     MIN_KEYPOINT_CONFIDENCE,
     SHOULDER_HORIZONTAL_PAD_FRACTION,
     TORSO_VERTICAL_PAD_FRACTION,
@@ -62,7 +62,7 @@ def _resolve_reference_histogram(target: BowlerTarget) -> np.ndarray:
     hist = resolve_reference_histogram(target)
     if hist is not None:
         return hist
-    return np.zeros(HSV_HISTOGRAM_BINS, dtype=np.float32)
+    return np.zeros((LBP_HISTOGRAM_BINS, 1), dtype=np.float32)
 
 
 def replay_clustering(
@@ -218,15 +218,14 @@ def build_reference_visualization(target: BowlerTarget) -> np.ndarray:
         return img
 
     if target.reference_histogram:
-        ref_hist = _resolve_reference_histogram(target)
-        v_hist = ref_hist.sum(axis=(0, 1))
+        ref_hist = _resolve_reference_histogram(target).flatten()
         img = np.zeros((CROP_DISPLAY_HEIGHT, PANEL_WIDTH, 3), dtype=np.uint8)
         img[:] = (50, 50, 50)
-        _draw_text(img, "Histogram-based reference", 10, 25, scale=0.5, color=(200, 200, 200))
-        max_val = v_hist.max() if v_hist.max() > 0 else 1.0
-        bar_w = (PANEL_WIDTH - 20) // len(v_hist)
+        _draw_text(img, "LBP texture reference", 10, 25, scale=0.5, color=(200, 200, 200))
+        max_val = ref_hist.max() if ref_hist.max() > 0 else 1.0
+        bar_w = (PANEL_WIDTH - 20) // len(ref_hist)
         bar_area_h = CROP_DISPLAY_HEIGHT - 50
-        for i, val in enumerate(v_hist):
+        for i, val in enumerate(ref_hist):
             bar_h = int((val / max_val) * bar_area_h)
             x1 = 10 + i * bar_w
             y1 = CROP_DISPLAY_HEIGHT - 10 - bar_h
@@ -503,10 +502,9 @@ def _to_hist_array(histogram: list[float]) -> np.ndarray | None:
     if not histogram:
         return None
     arr = np.array(histogram, dtype=np.float32)
-    expected_size = 16 * 8 * 8
-    if arr.size != expected_size:
-        return arr.reshape(-1, 1) if arr.size > 0 else None
-    return arr.reshape((16, 8, 8))
+    if 0 == arr.size:
+        return None
+    return arr.reshape(-1, 1)
 
 
 def _create_cluster(

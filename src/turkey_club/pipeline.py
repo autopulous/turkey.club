@@ -8,7 +8,6 @@ Two search strategies:
 """
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -24,7 +23,6 @@ from turkey_club.config import (
     VenueCalibration,
 )
 from turkey_club.detect import PersonDetection, bbox_foot_in_polygon, detect_device, detect_persons, frame_has_motion, pin_zone_motion
-from turkey_club.downscale import ensure_downscaled_video
 from turkey_club.export import export_clip
 from turkey_club.identify import identify_bowler_in_frame
 from turkey_club.merge import merge_clips
@@ -53,22 +51,18 @@ def scan_prefix(
     probe_interval_seconds: float = 2.0,
     person_confidence_threshold: float = 0.4,
     person_min_height_pixels: int = 80,
-    downscale_factor: float = 0.5,
     device: str = "auto",
 ) -> dict:
     """Scan the first ``prefix_seconds`` of video and return lane activity for format detection."""
     venue = VenueCalibration.load(calibration_path)
     target = BowlerTarget.load(bowler_target_path)
 
-    detection_video = ensure_downscaled_video(video, scale_factor=downscale_factor)
-    scaled_lanes = [_scale_lane(lane, downscale_factor) for lane in venue.lanes]
-    scaled_min_height = max(20, int(person_min_height_pixels * downscale_factor))
     resolved_device = detect_device(device)
     bowler_thresh = SegmentationParameters().bowler_confidence_threshold
 
-    capture = cv2.VideoCapture(str(detection_video))
+    capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
-        raise RuntimeError(f"Could not open detection video: {detection_video}")
+        raise RuntimeError(f"Could not open video: {video}")
     fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     prefix_frames = min(total_frames, int(prefix_seconds * fps))
@@ -88,10 +82,10 @@ def scan_prefix(
             persons = detect_persons(
                 frame,
                 confidence_threshold=person_confidence_threshold,
-                min_height_pixels=scaled_min_height,
+                min_height_pixels=person_min_height_pixels,
                 device=resolved_device,
             )
-            for lane in scaled_lanes:
+            for lane in venue.lanes:
                 if lane.name in active_lanes:
                     continue
                 for detection in persons:
@@ -135,89 +129,65 @@ def extract_shots(
     person_min_height_pixels: int = 80,
     merge: bool = True,
     merge_out: Path | None = None,
-    downscale_factor: float = 0.5,
     frame_skip: int = 1,
     motion_gate: bool = False,
     motion_gate_threshold: float = 3.0,
     device: str = "auto",
     format_preset: "FormatPreset | None" = None,
 ) -> int:
-    """Find and export every shot thrown by the named bowler. Returns the shot count.
-
-    Detection runs against a pre-downscaled cache of ``video`` (auto-created if
-    absent at ``<video.stem>.detect_<scale>x.mp4`` alongside the source). Clip
-    cuts use the original ``video`` for full-resolution output. Pass
-    ``downscale_factor=1.0`` to disable downscaling entirely.
-    """
+    """Find and export every shot thrown by the named bowler. Returns the shot count."""
     venue = VenueCalibration.load(calibration_path)
     target = BowlerTarget.load(bowler_target_path)
+    params = SegmentationParameters()
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    detection_video = ensure_downscaled_video(video, scale_factor=downscale_factor)
-    scaled_lanes = [_scale_lane(lane, downscale_factor) for lane in venue.lanes]
-    scaled_params = dataclasses.replace(
-        SegmentationParameters(),
-        pose_motion_threshold_pixels=SegmentationParameters().pose_motion_threshold_pixels * downscale_factor,
-    )
-    scaled_min_height = max(20, int(person_min_height_pixels * downscale_factor))
 
     resolved_device = detect_device(device)
     print(f"device={resolved_device} (requested={device})", flush=True)
 
     if bowler_lane is not None:
-        candidate_lanes = [next(lane for lane in scaled_lanes if lane.name == bowler_lane)]
+        candidate_lanes = [next(lane for lane in venue.lanes if lane.name == bowler_lane)]
     elif lane_policy == "fixed-lane":
         raise ValueError("lane_policy='fixed-lane' requires bowler_lane to be set")
-    elif lane_policy == "single-lane" and len(scaled_lanes) == 1:
-        candidate_lanes = scaled_lanes
-        print(f"single-lane policy: using only lane {scaled_lanes[0].name!r}", flush=True)
+    elif lane_policy == "single-lane" and 1 == len(venue.lanes):
+        candidate_lanes = venue.lanes
+        print(f"single-lane policy: using only lane {venue.lanes[0].name!r}", flush=True)
     else:
-        candidate_lanes = scaled_lanes
+        candidate_lanes = venue.lanes
 
-    capture = cv2.VideoCapture(str(detection_video))
+    capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
-        raise RuntimeError(f"Could not open detection video: {detection_video}")
+        raise RuntimeError(f"Could not open video: {video}")
     fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     print(
-        f"detection: {detection_video.name} — {total_frames} frames @ {fps:.2f} fps "
-        f"(scale={downscale_factor}, source={video.name})",
+        f"detection: {video.name} — {total_frames} frames @ {fps:.2f} fps",
         flush=True,
     )
     print(
         f"target={target.name!r} samples={len(target.shirt_color_samples)}, "
         f"strategy={strategy}, lanes={[lane.name for lane in candidate_lanes]}, "
-        f"scaled_min_height={scaled_min_height}px, scaled_pose_threshold={scaled_params.pose_motion_threshold_pixels:.2f}px, "
+        f"min_height={person_min_height_pixels}px, pose_threshold={params.pose_motion_threshold_pixels:.2f}px, "
         f"frame_skip={frame_skip}, motion_gate={motion_gate}",
         flush=True,
     )
 
-    census_dir = out_dir.parent / "census"
-    diagnostics_dir = out_dir.parent / "diagnostics"
-    diagnostics_dir.mkdir(parents=True, exist_ok=True)
-
-    if target.source_image_paths:
-        import shutil
-        ref_path = Path(target.source_image_paths[0])
-        if ref_path.exists():
-            shutil.copy2(str(ref_path), str(diagnostics_dir / "reference.jpg"))
+    census_dir = out_dir / "census"
 
     try:
         if strategy == "linear":
             shots = _extract_shots_linear(
-                capture, total_frames, fps, target, candidate_lanes, scaled_params,
-                person_confidence_threshold, scaled_min_height, frame_skip,
+                capture, total_frames, fps, target, candidate_lanes, params,
+                person_confidence_threshold, person_min_height_pixels, frame_skip,
                 motion_gate, motion_gate_threshold, resolved_device,
             )
         elif strategy == "multipass":
             capture.release()
             shots = _extract_shots_multipass(
-                video, venue, target, candidate_lanes, scaled_params,
+                video, venue, target, candidate_lanes, params,
                 probe_interval_seconds, person_confidence_threshold,
-                scaled_min_height, resolved_device, census_dir,
+                person_min_height_pixels, resolved_device, census_dir,
                 format_preset=format_preset,
             )
-            capture = cv2.VideoCapture(str(detection_video))
         else:
             raise ValueError(f"Unknown strategy: {strategy!r}")
     finally:
@@ -391,24 +361,6 @@ def _append_zero_signals(
         else:
             state.pin_motion.append(0.0)
         state.ball_reached_pins.append(False)
-
-
-def _scale_lane(lane: LaneCalibration, scale: float) -> LaneCalibration:
-    """Return a LaneCalibration with polygons scaled by ``scale`` (1.0 = no change).
-
-    Calibration zones are authored in source-pixel coordinates; this projects them
-    into detection-resolution coordinates so polygon membership tests work on the
-    downscaled detection frames.
-    """
-    def scale_poly(poly: list[tuple[int, int]]) -> list[tuple[int, int]]:
-        return [(int(x * scale), int(y * scale)) for x, y in poly]
-
-    return LaneCalibration(
-        name=lane.name,
-        approach_zone=scale_poly(lane.approach_zone),
-        lane_zone=scale_poly(lane.lane_zone),
-        pin_zone=scale_poly(lane.pin_zone),
-    )
 
 
 def _states_to_signals(states: list[_LaneState]) -> list[LaneFrameSignals]:

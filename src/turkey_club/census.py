@@ -24,6 +24,7 @@ from turkey_club.detect import (
     KEYPOINT_RIGHT_EYE,
     KEYPOINT_RIGHT_HIP,
     KEYPOINT_RIGHT_SHOULDER,
+    PersonDetection,
     bbox_foot_in_polygon,
     detect_persons,
 )
@@ -33,6 +34,98 @@ MIN_SHOULDER_CONFIDENCE = 0.5
 MIN_SHOULDER_SPAN_RATIO = 0.25
 FACE_CONFIDENCE_THRESHOLD = 0.5
 FACE_CONFIDENCE_SUM_THRESHOLD = 1.8
+
+SETUP_SCORE_SKIP_THRESHOLD = 3.5
+SETUP_SEARCH_MAX_SECONDS = 5.0
+SETUP_SEARCH_STEP_FRAMES = 10
+
+
+def setup_stance_score(detection: PersonDetection) -> float:
+    """Rate how likely this detection shows a bowler in their pre-delivery setup stance.
+
+    Higher score = more setup-like.  The score combines bounding-box
+    compactness (tall and narrow = upright, arms close) with shoulder
+    levelness (level shoulders = no delivery-arm tilt).
+    """
+    x1, y1, x2, y2 = detection.bbox
+    bbox_width = max(x2 - x1, 1)
+    bbox_height = max(y2 - y1, 1)
+    compactness = bbox_height / bbox_width
+
+    kp = detection.keypoints
+    if kp is not None:
+        ls = kp[KEYPOINT_LEFT_SHOULDER]
+        rs = kp[KEYPOINT_RIGHT_SHOULDER]
+        if ls[2] >= MIN_SHOULDER_CONFIDENCE and rs[2] >= MIN_SHOULDER_CONFIDENCE:
+            shoulder_span = abs(ls[0] - rs[0])
+            if shoulder_span > 1:
+                shoulder_tilt = abs(ls[1] - rs[1])
+                tilt_penalty = shoulder_tilt / shoulder_span
+                return compactness * max(0.0, 1.0 - tilt_penalty)
+
+    return compactness
+
+
+def find_setup_frame(
+    cap: cv2.VideoCapture,
+    census_frame: int,
+    lane: LaneCalibration,
+    person_confidence_threshold: float,
+    person_min_height_pixels: int,
+    model_name: str,
+    device: str,
+    max_search_seconds: float = SETUP_SEARCH_MAX_SECONDS,
+    search_step_frames: int = SETUP_SEARCH_STEP_FRAMES,
+) -> tuple[int, np.ndarray, PersonDetection] | None:
+    """Search backward (then forward) for the frame with the best setup-stance score.
+
+    Returns (frame_number, frame_image, detection) for the best candidate,
+    or None if no back-facing person is found in the approach zone within
+    the search window.
+    """
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    max_search_frames = int(max_search_seconds * fps)
+
+    best: tuple[float, int, np.ndarray, PersonDetection] | None = None
+
+    def _probe(target_frame: int) -> None:
+        nonlocal best
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+        ret, frame = cap.read()
+        if not ret:
+            return
+        detections = detect_persons(
+            frame,
+            confidence_threshold=person_confidence_threshold,
+            min_height_pixels=person_min_height_pixels,
+            model_name=model_name,
+            device=device,
+        )
+        for det in detections:
+            if not shoulders_visible(det.keypoints, MIN_SHOULDER_CONFIDENCE):
+                continue
+            if not bbox_foot_in_polygon(det.bbox, lane.approach_zone):
+                continue
+            score = setup_stance_score(det)
+            if best is None or score > best[0]:
+                best = (score, target_frame, frame.copy(), det)
+
+    for offset in range(search_step_frames, max_search_frames + 1, search_step_frames):
+        target = census_frame - offset
+        if target < 0:
+            break
+        _probe(target)
+
+    for offset in range(search_step_frames, max_search_frames + 1, search_step_frames):
+        target = census_frame + offset
+        if target >= total_frames:
+            break
+        _probe(target)
+
+    if best is None:
+        return None
+    return best[1], best[2], best[3]
 
 
 def run_census(
@@ -97,7 +190,32 @@ def run_census(
             if lane is None:
                 continue
 
-            crop = crop_back_from_keypoints(frame, detection.bbox, detection.keypoints)
+            use_frame = frame
+            use_detection = detection
+            setup_info = ""
+            current_score = setup_stance_score(detection)
+
+            if current_score < SETUP_SCORE_SKIP_THRESHOLD:
+                result = find_setup_frame(
+                    cap, frame_number, lane,
+                    person_confidence_threshold, person_min_height_pixels,
+                    model_name, device,
+                )
+                if result is not None:
+                    setup_frame_num, setup_frame_img, setup_det = result
+                    setup_score = setup_stance_score(setup_det)
+                    if setup_score > current_score:
+                        use_frame = setup_frame_img
+                        use_detection = setup_det
+                        setup_info = f" setup@{setup_frame_num} ({setup_score:.2f}>{current_score:.2f})"
+
+            if setup_info:
+                print(
+                    f"    frame {frame_number} person in {lane.name}:{setup_info}",
+                    flush=True,
+                )
+
+            crop = crop_back_from_keypoints(use_frame, use_detection.bbox, use_detection.keypoints)
             if 0 == crop.size:
                 continue
 

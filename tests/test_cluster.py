@@ -19,7 +19,7 @@ from turkey_club.cluster import (
 
 def _make_person(lane: str, histogram_seed: int = 0) -> CensusPersonRecord:
     rng = np.random.default_rng(histogram_seed)
-    hist = rng.random(16 * 8 * 8).astype(np.float32)
+    hist = rng.random(256).astype(np.float32)
     hist /= hist.sum()
     return CensusPersonRecord(
         bbox=(10, 10, 50, 100),
@@ -84,10 +84,7 @@ def test_identify_target_cluster():
     params = SegmentationParameters()
     clusters, _ = cluster_bowlers(records, params)
 
-    rng = np.random.default_rng(1)
-    reference_samples = [(int(r), int(g), int(b)) for r, g, b in rng.integers(0, 256, size=(50, 3))]
-
-    target = BowlerTarget(name="test", shirt_color_samples=reference_samples)
+    target = BowlerTarget(name="test", reference_histogram=list(bowler_a.histogram))
     best_cluster, margin = identify_target_cluster(clusters, target)
 
     assert best_cluster is not None

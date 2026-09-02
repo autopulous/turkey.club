@@ -11,7 +11,7 @@ from turkey_club.config import (
     ClusterAppearance,
     SegmentationParameters,
 )
-from turkey_club.identify import histogram_distance, resolve_reference_histogram
+from turkey_club.identify import LBP_HISTOGRAM_BINS, histogram_distance, resolve_reference_histogram
 
 
 def cluster_bowlers(
@@ -181,21 +181,15 @@ def identify_target_cluster(
     return best_cluster, margin
 
 
-def _hist_shape() -> tuple[int, int, int]:
-    from turkey_club.identify import HSV_HISTOGRAM_BINS
-    return HSV_HISTOGRAM_BINS
-
-
 def _to_hist_array(histogram: list[float]) -> np.ndarray | None:
     """Convert a flat histogram list to a shaped numpy array for cv2.compareHist."""
 
     if not histogram:
         return None
     arr = np.array(histogram, dtype=np.float32)
-    expected_size = 16 * 8 * 8
-    if arr.size != expected_size:
-        return arr.reshape(-1, 1) if arr.size > 0 else None
-    return arr.reshape(_hist_shape())
+    if 0 == arr.size:
+        return None
+    return arr.reshape(-1, 1)
 
 
 def _create_cluster(

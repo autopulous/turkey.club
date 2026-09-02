@@ -35,6 +35,12 @@ HSV_HISTOGRAM_BINS = (16, 8, 8)
 HSV_HISTOGRAM_RANGES = [0, 180, 0, 256, 0, 256]
 COLOR_CONFIDENCE_CAP = 0.85
 
+LBP_RADIUS = 1
+LBP_POINTS = 8
+LBP_HISTOGRAM_BINS = 1 << LBP_POINTS
+LBP_CLAHE_CLIP = 2.0
+LBP_CLAHE_GRID = (8, 8)
+
 PREPROCESS_EXPOSURE_GAMMA = 0.5
 PREPROCESS_SHADOW_LIFT = 0.5
 PREPROCESS_BRIGHTNESS_OFFSET = 50.0
@@ -72,6 +78,89 @@ def preprocess_for_histogram(image: np.ndarray) -> np.ndarray:
     return img
 
 
+@lru_cache(maxsize=4)
+def _build_uniform_lut(n_points: int) -> np.ndarray:
+    """Build a lookup table mapping raw LBP codes to uniform pattern labels.
+
+    Uniform patterns (≤ 2 bitwise transitions in the circular bit string)
+    get labels 0..n_points by their popcount.  Non-uniform patterns get
+    label n_points + 1.
+    """
+    n_patterns = 1 << n_points
+    lut = np.empty(n_patterns, dtype=np.uint8)
+    for code in range(n_patterns):
+        bits = format(code, f"0{n_points}b")
+        circular = bits + bits[0]
+        transitions = sum(1 for i in range(len(circular) - 1) if circular[i] != circular[i + 1])
+        if 2 >= transitions:
+            lut[code] = bin(code).count("1")
+        else:
+            lut[code] = n_points + 1
+    return lut
+
+
+def compute_lbp_image(gray: np.ndarray, radius: int = LBP_RADIUS, n_points: int = LBP_POINTS) -> np.ndarray:
+    """Compute a circular LBP image with bilinear interpolation.
+
+    Returns a uint16 image where each pixel holds its raw LBP code
+    (0..2^n_points - 1).
+    """
+    h, w = gray.shape[:2]
+    gray_f = gray.astype(np.float32)
+    gray_pad = np.pad(gray_f, 1, mode="edge")
+    r1 = radius + 1
+    rows = h - 2 * radius
+    cols = w - 2 * radius
+    center = gray_pad[r1:r1 + rows, r1:r1 + cols]
+    code = np.zeros((rows, cols), dtype=np.int32)
+
+    for p in range(n_points):
+        angle = 2.0 * np.pi * p / n_points
+        dx = radius * np.cos(angle)
+        dy = -radius * np.sin(angle)
+
+        fx = int(np.floor(dx))
+        fy = int(np.floor(dy))
+        cx = fx + 1
+        cy = fy + 1
+        tx = dx - fx
+        ty = dy - fy
+
+        tl = gray_pad[r1 + fy:r1 + fy + rows, r1 + fx:r1 + fx + cols]
+        tr = gray_pad[r1 + fy:r1 + fy + rows, r1 + cx:r1 + cx + cols]
+        bl = gray_pad[r1 + cy:r1 + cy + rows, r1 + fx:r1 + fx + cols]
+        br = gray_pad[r1 + cy:r1 + cy + rows, r1 + cx:r1 + cx + cols]
+
+        neighbor = (1 - tx) * (1 - ty) * tl + tx * (1 - ty) * tr + (1 - tx) * ty * bl + tx * ty * br
+
+        code |= (neighbor >= center).astype(np.int32) << p
+
+    return code.astype(np.uint16)
+
+
+def compute_lbp_histogram(crop: np.ndarray) -> np.ndarray:
+    """Compute a normalized LBP histogram from a BGR crop.
+
+    Preprocessing: grayscale conversion + CLAHE for local contrast
+    normalization.  Returns a 1D float32 array of LBP_HISTOGRAM_BINS
+    elements, L1-normalized.
+    """
+    if 0 == crop.size:
+        return np.zeros(LBP_HISTOGRAM_BINS, dtype=np.float32)
+
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=LBP_CLAHE_CLIP, tileGridSize=LBP_CLAHE_GRID)
+    gray = clahe.apply(gray)
+
+    lbp = compute_lbp_image(gray)
+    hist = np.histogram(lbp.ravel(), bins=np.arange(LBP_HISTOGRAM_BINS + 1), range=(0, LBP_HISTOGRAM_BINS))[0]
+    hist = hist.astype(np.float32)
+    total = hist.sum()
+    if 0 < total:
+        hist /= total
+    return hist
+
+
 @lru_cache(maxsize=1)
 def _load_ocr_reader() -> "Reader":
     import easyocr
@@ -97,16 +186,11 @@ def identify_bowler_in_frame(
         return 0.0
     ocr_score = _ocr_match_confidence(crop, target.name) if use_ocr else 0.0
 
-    if target.reference_histogram:
-        crop_hist = compute_crop_histogram(crop)
-        ref_hist = np.array(target.reference_histogram, dtype=np.float32)
-        expected = HSV_HISTOGRAM_BINS[0] * HSV_HISTOGRAM_BINS[1] * HSV_HISTOGRAM_BINS[2]
-        if ref_hist.size == expected:
-            ref_hist = ref_hist.reshape(HSV_HISTOGRAM_BINS)
-            distance = histogram_distance(crop_hist, ref_hist)
-            color_score = min(max(0.0, 1.0 - distance), COLOR_CONFIDENCE_CAP)
-        else:
-            color_score = 0.0
+    ref_hist = resolve_reference_histogram(target)
+    if ref_hist is not None:
+        crop_hist = compute_crop_histogram(crop).reshape(-1, 1)
+        distance = histogram_distance(crop_hist, ref_hist)
+        color_score = min(max(0.0, 1.0 - distance), COLOR_CONFIDENCE_CAP)
     elif target.shirt_color_samples:
         color_score = color_histogram_confidence(crop, target.shirt_color_samples)
     else:
@@ -263,37 +347,36 @@ def color_histogram_confidence(crop: np.ndarray, samples: Sequence[tuple[int, in
 
 
 def compute_crop_histogram(crop: np.ndarray) -> np.ndarray:
-    """Compute the normalized HSV histogram for a BGR crop, matching the bins used by identification."""
+    """Compute a normalized LBP texture histogram for a BGR crop.
 
-    if 0 == crop.size:
-        return np.zeros(HSV_HISTOGRAM_BINS, dtype=np.float32)
-    preprocessed = preprocess_for_histogram(crop)
-    hsv_crop = cv2.cvtColor(preprocessed, cv2.COLOR_BGR2HSV)
-    hist = cv2.calcHist([hsv_crop], [0, 1, 2], None, list(HSV_HISTOGRAM_BINS), HSV_HISTOGRAM_RANGES)
-    cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
-    return hist
+    Uses uniform circular LBP (radius=1, 8 sample points) after CLAHE
+    preprocessing.  Returns a 1D float32 array of LBP_HISTOGRAM_BINS
+    elements suitable for Bhattacharyya comparison.
+    """
+    return compute_lbp_histogram(crop)
 
 
 def resolve_reference_histogram(target: BowlerTarget) -> np.ndarray | None:
-    """Return the shaped HSV histogram from whichever source is available on a BowlerTarget.
+    """Return the reference LBP histogram from a BowlerTarget.
 
-    Prefers ``reference_histogram``; falls back to ``shirt_color_samples``.
-    Returns ``None`` when neither is populated.
+    Returns the stored ``reference_histogram`` when its size matches the
+    current LBP bin count.  Returns ``None`` for old-format (HSV) histograms
+    and for targets with only ``shirt_color_samples`` (LBP requires spatial
+    image data).
     """
     if target.reference_histogram:
         arr = np.array(target.reference_histogram, dtype=np.float32)
-        expected = HSV_HISTOGRAM_BINS[0] * HSV_HISTOGRAM_BINS[1] * HSV_HISTOGRAM_BINS[2]
-        if arr.size == expected:
-            return arr.reshape(HSV_HISTOGRAM_BINS)
-    if target.shirt_color_samples:
-        return samples_to_normalized_histogram(tuple(target.shirt_color_samples))
+        if arr.size == LBP_HISTOGRAM_BINS:
+            return arr.reshape(-1, 1)
     return None
 
 
 def histogram_distance(hist_a: np.ndarray, hist_b: np.ndarray) -> float:
-    """Bhattacharyya distance between two normalized HSV histograms. Lower = more similar."""
+    """Bhattacharyya distance between two normalized histograms. Lower = more similar."""
 
-    return float(cv2.compareHist(hist_a, hist_b, cv2.HISTCMP_BHATTACHARYYA))
+    a = hist_a.reshape(-1, 1).astype(np.float32) if 1 == hist_a.ndim else hist_a.astype(np.float32)
+    b = hist_b.reshape(-1, 1).astype(np.float32) if 1 == hist_b.ndim else hist_b.astype(np.float32)
+    return float(cv2.compareHist(a, b, cv2.HISTCMP_BHATTACHARYYA))
 
 
 def build_bowler_target_from_references(
